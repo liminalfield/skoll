@@ -17,6 +17,7 @@ use crate::host_link::HostLink;
 use crate::mpv::{self, Mpv};
 use crate::sync::{Action, Sync};
 use crate::transport::{format_time, SharedTransport, TransportSnapshot};
+use crate::video_path::{PathAction, PathSync};
 use crate::{log, paths, SkollParams};
 
 const WAKE_RATE_HZ: u32 = 60;
@@ -80,6 +81,7 @@ fn run(
 ) {
     let mut supervisor = Supervisor::new(instance, load_config);
     let mut sync = Sync::default();
+    let mut path_sync = PathSync::default();
     let mut synced_launch = 0;
     let mut was_playing = None;
     let mut process_watch = ProcessWatch::new(transport.load().blocks);
@@ -108,9 +110,11 @@ fn run(
         supervisor.tick(now);
         if supervisor.launches != synced_launch {
             sync.reset_mpv();
+            path_sync.reset_mpv();
             synced_launch = supervisor.launches;
         }
         if let Some(mpv) = supervisor.connected_mpv() {
+            sync_video_path(instance, mpv, &mut path_sync, params);
             let offset = f64::from(params.offset.value());
             for action in sync.tick(now, &snapshot, offset, mpv.state()) {
                 apply(instance, mpv, &mut sync, &snapshot, offset, &action);
@@ -125,6 +129,33 @@ fn run(
             // We fell behind, for example after a system suspend. Don't try to catch up.
             next_wake = now;
         }
+    }
+}
+
+/// Keeps the stored video path and mpv's open file in step.
+fn sync_video_path(instance: u32, mpv: &mut Mpv, path_sync: &mut PathSync, params: &SkollParams) {
+    let action = {
+        let Ok(stored) = params.video_path.read() else {
+            return;
+        };
+        path_sync.tick(stored.as_deref(), mpv.path())
+    };
+    match action {
+        Some(PathAction::Store(path)) => {
+            log!(instance, "video: {path}");
+            if let Ok(mut stored) = params.video_path.write() {
+                *stored = Some(path);
+            }
+        }
+        Some(PathAction::Load(path)) => {
+            if std::path::Path::new(&path).is_file() {
+                log!(instance, "loading saved video: {path}");
+                mpv.send(&json!({ "command": ["loadfile", path] }));
+            } else {
+                log!(instance, "saved video is missing, leaving mpv idle: {path}");
+            }
+        }
+        None => {}
     }
 }
 

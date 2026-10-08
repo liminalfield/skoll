@@ -2,7 +2,7 @@
 
 use nih_plug::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 mod config;
 mod host_link;
@@ -11,6 +11,7 @@ mod mpv;
 mod paths;
 mod sync;
 mod transport;
+mod video_path;
 mod worker;
 
 use config::Config;
@@ -32,6 +33,10 @@ pub(crate) struct SkollParams {
     /// The song time in seconds at which the video's first frame appears.
     #[id = "offset"]
     pub offset: FloatParam,
+
+    /// The video file. Plugin state, not a parameter: saved with the project.
+    #[persist = "video-path"]
+    pub video_path: RwLock<Option<String>>,
 }
 
 impl Default for SkollParams {
@@ -48,6 +53,7 @@ impl Default for SkollParams {
             .with_unit(" s")
             .with_step_size(0.001)
             .with_value_to_string(formatters::v2s_f32_rounded(3)),
+            video_path: RwLock::new(None),
         }
     }
 }
@@ -158,3 +164,22 @@ impl Vst3Plugin for Skoll {
 
 nih_export_clap!(Skoll);
 nih_export_vst3!(Skoll);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_path_round_trips_through_saved_state() {
+        let params = SkollParams::default();
+        *params.video_path.write().unwrap() = Some("/videos/cue 3.mov".to_owned());
+        let saved = params.serialize_fields();
+
+        let restored = SkollParams::default();
+        restored.deserialize_fields(&saved);
+        assert_eq!(
+            restored.video_path.read().unwrap().as_deref(),
+            Some("/videos/cue 3.mov")
+        );
+    }
+}

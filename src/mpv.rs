@@ -21,7 +21,8 @@ const CONNECT_WARN_AFTER: Duration = Duration::from_secs(5);
 /// The mpv script that opens a file dialog on right-click. Written next to the socket at launch.
 const SCRIPT: &str = include_str!("skoll.lua");
 
-/// IDs for `observe_property`. ID 1 is reserved for `path` (milestone 5).
+/// IDs for `observe_property`.
+const OBSERVE_PATH: u64 = 1;
 const OBSERVE_PAUSE: u64 = 2;
 const OBSERVE_EOF_REACHED: u64 = 3;
 const OBSERVE_SEEKABLE: u64 = 4;
@@ -74,6 +75,8 @@ pub struct Mpv {
     /// The latest reply that carried a request ID.
     reply: Option<(u64, Value)>,
     state: MpvState,
+    /// The open file as mpv reports it. `None` while idle.
+    path: Option<String>,
 }
 
 impl Mpv {
@@ -128,6 +131,7 @@ impl Mpv {
             launched: Instant::now(),
             warned_no_socket: false,
             state: MpvState::default(),
+            path: None,
             next_request_id: FIRST_REQUEST_ID,
             reply: None,
         })
@@ -135,6 +139,10 @@ impl Mpv {
 
     pub fn state(&self) -> &MpvState {
         &self.state
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
     }
 
     pub fn uptime(&self) -> Duration {
@@ -226,6 +234,7 @@ impl Mpv {
                 self.pending.clear();
                 // mpv replies to each with the current value, so the state is complete again
                 // even after a reconnect.
+                self.send(&json!({ "command": ["observe_property", OBSERVE_PATH, "path"] }));
                 self.send(&json!({ "command": ["observe_property", OBSERVE_PAUSE, "pause"] }));
                 self.send(&json!({
                     "command": ["observe_property", OBSERVE_EOF_REACHED, "eof-reached"]
@@ -298,6 +307,14 @@ impl Mpv {
         };
         if !QUIET_EVENTS.contains(&event) {
             log!(self.instance, "mpv event: {message}");
+        }
+        if event == "property-change"
+            && message.get("id").and_then(Value::as_u64) == Some(OBSERVE_PATH)
+        {
+            self.path = message
+                .get("data")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
         }
         apply_event(&mut self.state, event, message);
     }
