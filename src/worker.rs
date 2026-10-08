@@ -81,6 +81,7 @@ fn run(
     let mut sync = Sync::default();
     let mut synced_launch = 0;
     let mut was_playing = None;
+    let mut process_watch = ProcessWatch::new(transport.load().blocks);
     let period = Duration::from_secs(1) / WAKE_RATE_HZ;
     let mut next_wake = Instant::now();
 
@@ -90,6 +91,9 @@ fn run(
         if was_playing != Some(snapshot.playing) && snapshot.pos_seconds.is_some() {
             log!(instance, "transport {}", describe(&snapshot));
             was_playing = Some(snapshot.playing);
+        }
+        if let Some(message) = process_watch.update(now, snapshot.blocks) {
+            log!(instance, "{message} ({})", describe(&snapshot));
         }
 
         supervisor.tick(now);
@@ -125,6 +129,48 @@ fn apply(instance: u32, mpv: &mut Mpv, action: &Action) {
             log!(instance, "{} mpv", if pause { "pause" } else { "unpause" });
             mpv.send(&json!({ "command": ["set_property", "pause", pause] }));
         }
+    }
+}
+
+/// How long without a `process()` call counts as the host having stopped processing.
+const PROCESS_STALL: Duration = Duration::from_millis(500);
+
+/// Notices when the host stops and resumes calling `process()`. Bitwig may stop processing a
+/// silent track while the transport is stopped (spec section 11), and the playhead is then
+/// invisible to the plugin.
+struct ProcessWatch {
+    last_blocks: u64,
+    last_change: Instant,
+    stalled: bool,
+}
+
+impl ProcessWatch {
+    fn new(blocks: u64) -> Self {
+        Self {
+            last_blocks: blocks,
+            last_change: Instant::now(),
+            stalled: false,
+        }
+    }
+
+    /// Returns a message when processing stops or resumes.
+    fn update(&mut self, now: Instant, blocks: u64) -> Option<String> {
+        if blocks != self.last_blocks {
+            let idle = now.duration_since(self.last_change);
+            self.last_blocks = blocks;
+            self.last_change = now;
+            if self.stalled {
+                self.stalled = false;
+                return Some(format!(
+                    "host resumed calling process() after {:.1} s",
+                    idle.as_secs_f64()
+                ));
+            }
+        } else if !self.stalled && now.duration_since(self.last_change) >= PROCESS_STALL {
+            self.stalled = true;
+            return Some("host stopped calling process()".to_owned());
+        }
+        None
     }
 }
 
@@ -260,6 +306,24 @@ mod tests {
             blocks: 0,
         };
         assert_eq!(describe(&snapshot), "stopped at an unknown position");
+    }
+
+    #[test]
+    fn notices_process_stalls_once() {
+        let t0 = Instant::now();
+        let mut watch = ProcessWatch::new(0);
+        watch.last_change = t0;
+        assert_eq!(watch.update(t0 + Duration::from_millis(100), 5), None);
+        assert_eq!(watch.update(t0 + Duration::from_millis(400), 5), None);
+        assert_eq!(
+            watch.update(t0 + Duration::from_millis(600), 5).as_deref(),
+            Some("host stopped calling process()")
+        );
+        assert_eq!(watch.update(t0 + Duration::from_secs(2), 5), None);
+        assert_eq!(
+            watch.update(t0 + Duration::from_secs(3), 6).as_deref(),
+            Some("host resumed calling process() after 2.9 s")
+        );
     }
 
     #[test]
