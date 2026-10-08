@@ -1,0 +1,22 @@
+[package]
+name = "skoll"
+version = "0.1.0"
+edition = "2021"
+authors = ["Oluf Andrews <oluf@oandrews.com>"]
+license = "GPL-3.0-or-later"
+homepage = "https://github.com/liminalfield/skoll"
+description = "Video sync for scoring to picture in Bitwig on Linux"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# nih-plug has no stable release. Pin the commit to avoid API drift.
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683", features = ["assert_process_allocs"] }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

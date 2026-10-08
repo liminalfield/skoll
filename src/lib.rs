@@ -1,0 +1,129 @@
+//! Skoll: a video sync plugin for Bitwig. See `docs/spec.md`.
+
+use nih_plug::prelude::*;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
+pub mod log;
+mod transport;
+mod worker;
+
+use transport::SharedTransport;
+use worker::Worker;
+
+/// Numbers plugin instances within one host process, so their log lines can be told apart.
+static NEXT_INSTANCE: AtomicU32 = AtomicU32::new(1);
+
+pub struct Skoll {
+    params: Arc<SkollParams>,
+    instance: u32,
+    transport: Arc<SharedTransport>,
+    _worker: Worker,
+}
+
+#[derive(Params, Default)]
+struct SkollParams {}
+
+impl Default for Skoll {
+    fn default() -> Self {
+        let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+        log!(instance, "created: {} {}", Self::NAME, Self::VERSION);
+
+        let transport = Arc::new(SharedTransport::default());
+        Self {
+            params: Arc::new(SkollParams::default()),
+            instance,
+            _worker: Worker::spawn(instance, transport.clone()),
+            transport,
+        }
+    }
+}
+
+impl Drop for Skoll {
+    fn drop(&mut self) {
+        log!(self.instance, "destroyed");
+    }
+}
+
+impl Plugin for Skoll {
+    const NAME: &'static str = "Skoll";
+    const VENDOR: &'static str = "Liminal Field";
+    const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
+    const EMAIL: &'static str = "";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(2),
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
+
+    const MIDI_INPUT: MidiConfig = MidiConfig::None;
+    const SAMPLE_ACCURATE_AUTOMATION: bool = false;
+
+    type SysExMessage = ();
+    type BackgroundTask = ();
+
+    fn params(&self) -> Arc<dyn Params> {
+        self.params.clone()
+    }
+
+    fn initialize(
+        &mut self,
+        _audio_io_layout: &AudioIOLayout,
+        buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {
+        log!(
+            self.instance,
+            "initialized: sample rate {} Hz, max block {} samples",
+            buffer_config.sample_rate,
+            buffer_config.max_buffer_size
+        );
+        true
+    }
+
+    fn process(
+        &mut self,
+        _buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
+        // Audio passes through unchanged: the buffer is processed in place.
+        // `pos_seconds()` prefers the host's seconds and falls back to samples / sample rate.
+        let transport = context.transport();
+        self.transport.store(
+            transport.playing,
+            transport.pos_seconds(),
+            transport.sample_rate,
+        );
+        ProcessStatus::Normal
+    }
+
+    fn deactivate(&mut self) {
+        log!(self.instance, "deactivated");
+    }
+}
+
+impl ClapPlugin for Skoll {
+    const CLAP_ID: &'static str = "com.liminalfield.skoll";
+    const CLAP_DESCRIPTION: Option<&'static str> =
+        Some("Syncs an mpv video window to the transport");
+    const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
+    const CLAP_SUPPORT_URL: Option<&'static str> = None;
+    const CLAP_FEATURES: &'static [ClapFeature] = &[
+        ClapFeature::AudioEffect,
+        ClapFeature::Stereo,
+        ClapFeature::Utility,
+    ];
+}
+
+impl Vst3Plugin for Skoll {
+    // Never change this: hosts identify saved VST3 instances by it.
+    const VST3_CLASS_ID: [u8; 16] = *b"SkollLiminalFld1";
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
+        &[Vst3SubCategory::Fx, Vst3SubCategory::Tools];
+}
+
+nih_export_clap!(Skoll);
+nih_export_vst3!(Skoll);
