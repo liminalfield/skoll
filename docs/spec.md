@@ -46,7 +46,7 @@ Only the default mpv flags are tuned for the nested X11 case.
 - A video window embedded in the plugin editor.
 - Playing the video's own soundtrack through the plugin.
 - Rendering the finished score to a video file.
-- A file picker inside the plugin.
+- A file picker in a plugin editor. Videos are opened from the mpv window instead (section 6).
 - Windows and macOS builds.
 
 ## 4. Prerequisites
@@ -54,7 +54,7 @@ Only the default mpv flags are tuned for the nested X11 case.
 Install before the first Claude Code session:
 
 - The Rust toolchain through rustup.
-- `mpv` and `ffmpeg` from pacman.
+- `mpv`, `ffmpeg` and `zenity` from pacman.
 - An empty git repository.
 
 ## 5. Plugin design
@@ -154,7 +154,10 @@ Claude Code should verify each command against the current mpv manual.
 
 ### Loading a video
 
-- The user drops a video file onto the mpv window.
+- The user right-clicks the mpv window, or presses `O` in it. A file dialog (zenity) opens, and the chosen file loads.
+- Dropping a file onto the mpv window also works, but only from a file manager on the same display as mpv. In the nested setup, Nautilus on Hyprland cannot drop into the nested display.
+- The dialog comes from an mpv Lua script embedded in the plugin. The plugin writes it next to the socket at launch, passes it with `--script`, and deletes it with the socket.
+- While mpv is idle, the window shows "Right-click to open a video".
 - mpv reports the new `path` through the observed property.
 - The plugin stores the path in its persisted state.
 - On project load, the plugin sends `loadfile` with the stored path.
@@ -267,7 +270,7 @@ Done when: Show Video can be mapped to a key in Bitwig and toggles the window.
 
 - What the plugin does and what it does not do.
 - Install steps and the pacman packages.
-- How to load a video (drop it on the mpv window).
+- How to load a video (right-click the mpv window, or drop a file from the same display).
 - The config file, with the default flags.
 - Window placement on three setups: nested X11 with Openbox, plain X11, and Hyprland with a `windowrule` for class `mpv`.
 - An ffmpeg command for an MJPEG or ProRes proxy.

@@ -18,6 +18,9 @@ const QUIT_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long to wait for the socket before logging that it is missing.
 const CONNECT_WARN_AFTER: Duration = Duration::from_secs(5);
 
+/// The mpv script that opens a file dialog on right-click. Written next to the socket at launch.
+const SCRIPT: &str = include_str!("skoll.lua");
+
 /// IDs for `observe_property`. ID 1 is reserved for `path` (milestone 5).
 const OBSERVE_PAUSE: u64 = 2;
 const OBSERVE_EOF_REACHED: u64 = 3;
@@ -65,11 +68,18 @@ impl Mpv {
         args: &[String],
         socket: &Path,
     ) -> io::Result<Self> {
-        remove_socket(socket);
+        remove_file_quietly(socket);
+        let script = script_path(socket);
+        fs::write(&script, SCRIPT)?;
+        let args: Vec<String> = args
+            .iter()
+            .cloned()
+            .chain([format!("--script={}", script.display())])
+            .collect();
 
         let mut command = Command::new(program);
         command
-            .args(args)
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -262,7 +272,8 @@ impl Mpv {
                 let _ = self.child.wait();
             }
         }
-        remove_socket(&self.socket);
+        remove_file_quietly(&self.socket);
+        remove_file_quietly(&script_path(&self.socket));
     }
 
     fn wait_for_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
@@ -283,7 +294,8 @@ impl Drop for Mpv {
     }
 }
 
-/// Deletes sockets left by host processes that died without cleaning up, for example after a crash.
+/// Deletes sockets and scripts left by host processes that died without cleaning up, for example
+/// after a crash.
 pub fn remove_stale_sockets(instance: u32, dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -297,15 +309,23 @@ pub fn remove_stale_sockets(instance: u32, dir: &Path) {
         let alive = unsafe { libc::kill(pid, 0) } == 0
             || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
         if !alive {
-            log!(instance, "deleting stale socket {}", entry.path().display());
-            remove_socket(&entry.path());
+            log!(instance, "deleting stale file {}", entry.path().display());
+            remove_file_quietly(&entry.path());
         }
     }
 }
 
-/// The host pid in a socket name of the form `skoll-<pid>-<suffix>.sock`.
+/// The mpv script's path: the socket's, with a `.lua` extension.
+fn script_path(socket: &Path) -> PathBuf {
+    socket.with_extension("lua")
+}
+
+/// The host pid in a file name of the form `skoll-<pid>-<suffix>.sock` or `.lua`.
 fn socket_owner_pid(name: &str) -> Option<libc::pid_t> {
-    let rest = name.strip_prefix("skoll-")?.strip_suffix(".sock")?;
+    let rest = name.strip_prefix("skoll-")?;
+    let rest = rest
+        .strip_suffix(".sock")
+        .or_else(|| rest.strip_suffix(".lua"))?;
     let (pid, _suffix) = rest.split_once('-')?;
     pid.parse().ok().filter(|&pid| pid > 0)
 }
@@ -336,11 +356,11 @@ fn apply_event(state: &mut MpvState, event: &str, message: &Value) {
     }
 }
 
-fn remove_socket(socket: &Path) {
-    match fs::remove_file(socket) {
+fn remove_file_quietly(path: &Path) {
+    match fs::remove_file(path) {
         Ok(()) => {}
         Err(err) if err.kind() == ErrorKind::NotFound => {}
-        Err(err) => log!(0, "could not delete {}: {err}", socket.display()),
+        Err(err) => log!(0, "could not delete {}: {err}", path.display()),
     }
 }
 
@@ -402,6 +422,7 @@ mod tests {
         let pid = mpv.child.id() as i32;
         drop(mpv);
         assert!(!socket.exists());
+        assert!(!script_path(&socket).exists());
         // The process is gone and reaped.
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     }
@@ -422,6 +443,7 @@ mod tests {
         }
         drop(mpv);
         assert!(!socket.exists());
+        assert!(!script_path(&socket).exists());
     }
 
     fn event(text: &str) -> (String, Value) {
@@ -471,9 +493,60 @@ mod tests {
         assert_eq!(state.file_generation, 2);
     }
 
+    /// The right-click script runs the dialog and loads what it prints. A fake zenity stands in
+    /// for the real dialog. Skipped without mpv or the test clip.
+    #[test]
+    fn dialog_script_loads_the_chosen_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let clip = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-media/sync-test-24fps.mkv");
+        if !clip.exists() {
+            return;
+        }
+        let socket = paths::socket_path();
+        let fake_zenity = socket.with_extension("zenity");
+        fs::write(
+            &fake_zenity,
+            format!("#!/bin/sh\necho '{}'\n", clip.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_zenity, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let args: Vec<String> = ["--idle=yes", "--no-terminal", "--vo=null", "--no-audio"]
+            .iter()
+            .map(|&f| f.to_owned())
+            .chain([
+                format!("--script-opts=skoll-zenity={}", fake_zenity.display()),
+                format!("--input-ipc-server={}", socket.display()),
+            ])
+            .collect();
+        let mut mpv = match Mpv::launch(0, Path::new("mpv"), &args, &socket) {
+            Ok(mpv) => mpv,
+            Err(err) if err.kind() == ErrorKind::NotFound => return,
+            Err(err) => panic!("{err}"),
+        };
+        poll_until_connected(&mut mpv);
+        assert!(script_path(&socket).exists());
+
+        // Give mpv a moment to load the script, then "right-click".
+        thread::sleep(Duration::from_millis(300));
+        mpv.send(&json!({ "command": ["script-message", "skoll-open"] }));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !mpv.state().file_loaded {
+            assert!(mpv.poll().is_none(), "mpv exited");
+            assert!(Instant::now() < deadline, "the file never loaded");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(mpv);
+        fs::remove_file(&fake_zenity).unwrap();
+        assert!(!script_path(&socket).exists());
+    }
+
     #[test]
     fn parses_socket_owner_pid() {
         assert_eq!(socket_owner_pid("skoll-1234-0a1b2c3d.sock"), Some(1234));
+        assert_eq!(socket_owner_pid("skoll-1234-0a1b2c3d.lua"), Some(1234));
         assert_eq!(socket_owner_pid("skoll-0-0a1b2c3d.sock"), None);
         assert_eq!(socket_owner_pid("skoll-x-0a1b2c3d.sock"), None);
         assert_eq!(socket_owner_pid("other-1234-0a1b2c3d.sock"), None);
