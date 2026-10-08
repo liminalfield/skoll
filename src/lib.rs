@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 mod config;
+mod host_link;
 pub mod log;
 mod mpv;
 mod paths;

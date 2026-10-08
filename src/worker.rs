@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::config::Config;
+use crate::host_link::HostLink;
 use crate::mpv::{self, Mpv};
 use crate::sync::{Action, Sync};
 use crate::transport::{format_time, SharedTransport, TransportSnapshot};
@@ -82,12 +83,20 @@ fn run(
     let mut synced_launch = 0;
     let mut was_playing = None;
     let mut process_watch = ProcessWatch::new(transport.load().blocks);
+    let mut host_link = HostLink::new(instance);
     let period = Duration::from_secs(1) / WAKE_RATE_HZ;
     let mut next_wake = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
-        let snapshot = transport.load();
+        let mut snapshot = transport.load();
+        // Bitwig gives plugins a stale position while stopped. The extension, when running,
+        // reports the real playhead. While playing, the plugin's own position is more precise.
+        if let Some(host) = host_link.poll(now) {
+            if !snapshot.playing {
+                snapshot.pos_seconds = Some(host.playhead_seconds);
+            }
+        }
         if was_playing != Some(snapshot.playing) && snapshot.pos_seconds.is_some() {
             log!(instance, "transport {}", describe(&snapshot));
             was_playing = Some(snapshot.playing);

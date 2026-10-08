@@ -12,6 +12,7 @@ It is a Linux-first equivalent of VidPlayVST, with a smaller feature set.
 
 The plugin does not decode or draw video itself.
 The plugin launches mpv as a separate program and controls mpv over mpv's JSON IPC socket.
+A small Bitwig controller extension, Skoll Transport, reports the playhead while the transport is stopped, because Bitwig does not give plugins that position (section 5).
 mpv owns the window, the decoding and the display.
 
 ## 2. Target environment
@@ -40,6 +41,7 @@ Only the default mpv flags are tuned for the nested X11 case.
 - **Name.** Skoll. The crate, config directory and socket prefix use `skoll`. The CLAP ID is `com.liminalfield.skoll`.
 - **Licence.** GPLv3, because nih-plug's VST3 export uses GPLv3 bindings.
 - **Repository.** `github.com/liminalfield/skoll`, public.
+- **Controller extension.** A Java Bitwig controller extension in `extension/` sends the playhead to the plugin over UDP. Optional: without it the picture only syncs on play and stop.
 
 ### Out of scope for version 1
 
@@ -54,6 +56,7 @@ Only the default mpv flags are tuned for the nested X11 case.
 Install before the first Claude Code session:
 
 - The Rust toolchain through rustup.
+- A JDK (21 or newer), to build the controller extension.
 - `mpv`, `ffmpeg` and `zenity` from pacman.
 - An empty git repository.
 
@@ -94,6 +97,15 @@ If video time is past the end, mpv holds the last frame (`--keep-open`).
 - Prefer the position in seconds if the host supplies it.
 - Otherwise compute seconds from the position in samples and the sample rate.
 - Tempo changes need no special handling, because the position is already in time units.
+- **Bitwig does not update this position while the transport is stopped**, in CLAP or VST3. Moving the playhead while stopped reaches the plugin only when playback starts, and the return to the play-start marker on stop never reaches it. Tested with Bitwig 6.1.3 on 2026-10-08.
+- While stopped, the plugin therefore takes the playhead from the Skoll Transport extension when it is running.
+
+### Skoll Transport extension
+
+- A Bitwig controller extension (Java, `extension/`), built and installed by `scripts/install-extension.sh` into `~/Bitwig Studio/Extensions`. It is enabled once in Settings → Controllers.
+- It observes `Transport.isPlaying()`, `playPositionInSeconds()` and `playStartPositionInSeconds()`.
+- Protocol, UDP on 127.0.0.1, ASCII. Each plugin instance binds a free port and sends `hello <port>` to port 58730 every second. The extension replies to each hello and sends every transport change to each instance heard from in the last 3 seconds, as `skoll1 <playing 0|1> <playhead seconds> <play-start seconds>`.
+- The plugin treats 3 seconds without a message as the extension being gone.
 
 ## 6. mpv control
 
@@ -236,6 +248,7 @@ Done when all of these are true:
 - Sync rules 1, 5 and 6.
 
 Done when: moving the playhead with the transport stopped moves the picture to the matching timecode.
+This needs the Skoll Transport extension (section 5).
 
 ### Milestone 4: Play sync
 
@@ -258,7 +271,8 @@ Done when: Show Video can be mapped to a key in Bitwig and toggles the window.
 
 ## 11. Known risks
 
-- **Suspended processing.** Bitwig may stop calling `process()` when the transport is stopped and the track is silent. Milestone 3 would then fail. First fix to try: Bitwig's per-plugin suspend setting. Second fix: read the playhead through a different host callback.
+- **Suspended processing.** Bitwig may stop calling `process()` when the transport is stopped and the track is silent. In testing it kept calling `process()`, but with a stale position (section 5). The plugin logs when the host stops and resumes calling `process()`.
+- **Stale position while stopped.** Confirmed in Bitwig 6.1.3. Fixed by the Skoll Transport extension.
 - **Stacking under Openbox.** If Openbox ignores `--ontop`, an `<application class="mpv">` rule with `<layer>above</layer>` in Openbox's `rc.xml` forces the layer.
 - **picom and video.** picom's settings were tuned to stop trails in plugin windows. They may cause tearing or dropped frames in video. A picom rule can exclude class `mpv` from compositing.
 - **Hiding the window.** `window-minimized` may behave oddly under Openbox. Fallback: quit mpv when Show Video is off, and relaunch and reload when it is on.

@@ -15,6 +15,14 @@ scripts/install.sh
 
 This builds the CLAP and VST3 bundles and copies them to `~/.clap` and `~/.vst3`.
 
+Bitwig does not tell plugins where the playhead is while the transport is stopped. To make the picture follow the playhead then, install the Skoll Transport controller extension (needs a JDK):
+
+```sh
+scripts/install-extension.sh
+```
+
+Then in Bitwig, open Settings → Controllers, click Add Controller, and choose Liminal Field → Skoll Transport.
+
 The plugin logs to `$XDG_STATE_HOME/skoll/plugin.log`, falling back to `~/.local/state/skoll/plugin.log`.
 
 ## Licence
