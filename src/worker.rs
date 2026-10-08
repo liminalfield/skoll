@@ -1,7 +1,7 @@
 //! The background thread.
 //!
 //! The thread wakes at a fixed rate. It owns the mpv process and its socket, relaunches mpv when it
-//! exits, and logs the transport once per second.
+//! exits, and applies the sync rules.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -10,13 +10,15 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use serde_json::json;
+
 use crate::config::Config;
 use crate::mpv::{self, Mpv};
+use crate::sync::{Action, Sync};
 use crate::transport::{format_time, SharedTransport, TransportSnapshot};
-use crate::{log, paths};
+use crate::{log, paths, SkollParams};
 
 const WAKE_RATE_HZ: u32 = 60;
-const LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The relaunch delay after mpv exits. It doubles while mpv keeps exiting soon after launch.
 const MIN_RELAUNCH_DELAY: Duration = Duration::from_secs(1);
@@ -37,6 +39,7 @@ impl Worker {
     pub fn spawn(
         instance: u32,
         transport: Arc<SharedTransport>,
+        params: Arc<SkollParams>,
         load_config: ConfigLoader,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -44,7 +47,7 @@ impl Worker {
             .name(format!("skoll-worker-{instance}"))
             .spawn({
                 let stop = stop.clone();
-                move || run(instance, &transport, &stop, load_config)
+                move || run(instance, &transport, &params, &stop, load_config)
             });
 
         let handle = match handle {
@@ -67,26 +70,38 @@ impl Drop for Worker {
     }
 }
 
-fn run(instance: u32, transport: &SharedTransport, stop: &AtomicBool, load_config: ConfigLoader) {
+fn run(
+    instance: u32,
+    transport: &SharedTransport,
+    params: &SkollParams,
+    stop: &AtomicBool,
+    load_config: ConfigLoader,
+) {
     let mut supervisor = Supervisor::new(instance, load_config);
+    let mut sync = Sync::default();
+    let mut synced_launch = 0;
+    let mut was_playing = None;
     let period = Duration::from_secs(1) / WAKE_RATE_HZ;
     let mut next_wake = Instant::now();
-    let mut next_log = Instant::now();
-    let mut last_blocks = transport.load().blocks;
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
-        supervisor.tick(now);
+        let snapshot = transport.load();
+        if was_playing != Some(snapshot.playing) && snapshot.pos_seconds.is_some() {
+            log!(instance, "transport {}", describe(&snapshot));
+            was_playing = Some(snapshot.playing);
+        }
 
-        if now >= next_log {
-            let snapshot = transport.load();
-            log!(
-                instance,
-                "{}",
-                describe(&snapshot, snapshot.blocks - last_blocks)
-            );
-            last_blocks = snapshot.blocks;
-            next_log += LOG_INTERVAL;
+        supervisor.tick(now);
+        if supervisor.launches != synced_launch {
+            sync.reset_mpv();
+            synced_launch = supervisor.launches;
+        }
+        if let Some(mpv) = supervisor.connected_mpv() {
+            let offset = f64::from(params.offset.value());
+            for action in sync.tick(now, &snapshot, offset, mpv.state()) {
+                apply(instance, mpv, &action);
+            }
         }
 
         next_wake += period;
@@ -96,7 +111,19 @@ fn run(instance: u32, transport: &SharedTransport, stop: &AtomicBool, load_confi
         } else {
             // We fell behind, for example after a system suspend. Don't try to catch up.
             next_wake = now;
-            next_log = next_log.max(now);
+        }
+    }
+}
+
+fn apply(instance: u32, mpv: &mut Mpv, action: &Action) {
+    match *action {
+        Action::Seek { to, reason } => {
+            log!(instance, "seek to {} ({reason})", format_time(to));
+            mpv.send(&json!({ "command": ["seek", to, "absolute+exact"] }));
+        }
+        Action::SetPause(pause) => {
+            log!(instance, "{} mpv", if pause { "pause" } else { "unpause" });
+            mpv.send(&json!({ "command": ["set_property", "pause", pause] }));
         }
     }
 }
@@ -111,6 +138,8 @@ struct Supervisor {
     relaunch_delay: Duration,
     /// Set when mpv is not installed. Audio still passes through.
     gave_up: bool,
+    /// Counts successful launches, so the sync state can be reset for a new mpv.
+    launches: u64,
 }
 
 impl Supervisor {
@@ -127,7 +156,13 @@ impl Supervisor {
             next_launch: Instant::now(),
             relaunch_delay: MIN_RELAUNCH_DELAY,
             gave_up: false,
+            launches: 0,
         }
+    }
+
+    /// mpv, once its socket is connected.
+    fn connected_mpv(&mut self) -> Option<&mut Mpv> {
+        self.mpv.as_mut().filter(|mpv| mpv.is_connected())
     }
 
     fn tick(&mut self, now: Instant) {
@@ -154,7 +189,10 @@ impl Supervisor {
         let config = (self.load_config)(self.instance);
         let args = config.mpv_args(&self.socket);
         match Mpv::launch(self.instance, config.mpv_path(), &args, &self.socket) {
-            Ok(mpv) => self.mpv = Some(mpv),
+            Ok(mpv) => {
+                self.mpv = Some(mpv);
+                self.launches += 1;
+            }
             Err(err) if err.kind() == ErrorKind::NotFound => {
                 log!(
                     self.instance,
@@ -185,22 +223,17 @@ fn next_relaunch_delay(previous: Duration, uptime: Duration) -> Duration {
     }
 }
 
-/// One log line for the transport. `blocks` is the number of `process()` calls since the last
-/// line, so zero means the host has stopped processing.
-fn describe(snapshot: &TransportSnapshot, blocks: u64) -> String {
+/// The transport for a log line, such as `playing at 1:01.500 (61.500000 s)`.
+fn describe(snapshot: &TransportSnapshot) -> String {
     let state = if snapshot.playing {
         "playing"
     } else {
         "stopped"
     };
-    let pos = match snapshot.pos_seconds {
-        Some(seconds) => format!("{} ({seconds:.6} s)", format_time(seconds)),
-        None => "unknown".to_owned(),
-    };
-    format!(
-        "{state} pos={pos} sr={} blocks={blocks}",
-        snapshot.sample_rate
-    )
+    match snapshot.pos_seconds {
+        Some(seconds) => format!("{state} at {} ({seconds:.6} s)", format_time(seconds)),
+        None => format!("{state} at an unknown position"),
+    }
 }
 
 #[cfg(test)]
@@ -215,10 +248,7 @@ mod tests {
             sample_rate: 48_000.0,
             blocks: 0,
         };
-        assert_eq!(
-            describe(&snapshot, 94),
-            "playing pos=1:01.500 (61.500000 s) sr=48000 blocks=94"
-        );
+        assert_eq!(describe(&snapshot), "playing at 1:01.500 (61.500000 s)");
     }
 
     #[test]
@@ -229,10 +259,7 @@ mod tests {
             sample_rate: 44_100.0,
             blocks: 0,
         };
-        assert_eq!(
-            describe(&snapshot, 0),
-            "stopped pos=unknown sr=44100 blocks=0"
-        );
+        assert_eq!(describe(&snapshot), "stopped at an unknown position");
     }
 
     #[test]
@@ -251,6 +278,89 @@ mod tests {
         );
     }
 
+    /// Drives a real, windowless mpv through the sync rules with the test clip, and reads the
+    /// resulting position over a second IPC connection. Skipped without mpv or the clip.
+    #[test]
+    fn stopped_follow_with_real_mpv() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::path::Path;
+
+        let clip = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-media/sync-test-24fps.mkv");
+        if !clip.exists() {
+            return;
+        }
+        let socket = paths::socket_path();
+        let mut args: Vec<String> = Config {
+            window_flags: Some(vec!["--vo=null".to_owned()]),
+            ..Config::default()
+        }
+        .mpv_args(&socket);
+        args.push(clip.display().to_string());
+        let mut mpv = match Mpv::launch(0, Path::new("mpv"), &args, &socket) {
+            Ok(mpv) => mpv,
+            Err(err) if err.kind() == ErrorKind::NotFound => return,
+            Err(err) => panic!("{err}"),
+        };
+
+        let mut sync = Sync::default();
+        let mut run_for = |transport: TransportSnapshot, offset: f64, duration: Duration| {
+            let end = Instant::now() + duration;
+            while Instant::now() < end {
+                assert!(mpv.poll().is_none(), "mpv exited");
+                if mpv.is_connected() {
+                    for action in sync.tick(Instant::now(), &transport, offset, mpv.state()) {
+                        apply(0, &mut mpv, &action);
+                    }
+                }
+                thread::sleep(Duration::from_millis(16));
+            }
+            *mpv.state()
+        };
+        let query = |property: &str| -> serde_json::Value {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            let request = json!({ "command": ["get_property", property], "request_id": 7 });
+            writeln!(stream, "{request}").unwrap();
+            let mut reader = BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+                if reply["request_id"] == 7 {
+                    return reply["data"].clone();
+                }
+            }
+        };
+        let stopped_at = |pos: f64| TransportSnapshot {
+            playing: false,
+            pos_seconds: Some(pos),
+            sample_rate: 48_000.0,
+            blocks: 0,
+        };
+
+        let state = run_for(stopped_at(61.5), 0.0, Duration::from_secs(2));
+        assert!(state.file_loaded);
+        assert_eq!(query("time-pos").as_f64(), Some(61.5));
+        assert_eq!(query("pause").as_bool(), Some(true));
+
+        // Scrub backwards, then before the video starts.
+        run_for(stopped_at(12.25), 0.0, Duration::from_millis(300));
+        assert_eq!(query("time-pos").as_f64(), Some(12.25));
+        run_for(stopped_at(3.0), 10.0, Duration::from_millis(300));
+        assert_eq!(query("time-pos").as_f64(), Some(0.0));
+
+        // Someone unpauses mpv by hand: rule 5 pauses it again.
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        writeln!(
+            stream,
+            "{}",
+            json!({ "command": ["set_property", "pause", false] })
+        )
+        .unwrap();
+        run_for(stopped_at(3.0), 10.0, Duration::from_millis(300));
+        assert_eq!(query("pause").as_bool(), Some(true));
+    }
+
     fn missing_mpv(_: u32) -> Config {
         Config {
             mpv_path: Some("/nonexistent/mpv".into()),
@@ -260,7 +370,12 @@ mod tests {
 
     #[test]
     fn drop_stops_the_thread() {
-        let worker = Worker::spawn(0, Arc::new(SharedTransport::default()), missing_mpv);
+        let worker = Worker::spawn(
+            0,
+            Arc::new(SharedTransport::default()),
+            Arc::new(SkollParams::default()),
+            missing_mpv,
+        );
         let start = Instant::now();
         drop(worker);
         assert!(start.elapsed() < Duration::from_millis(500));

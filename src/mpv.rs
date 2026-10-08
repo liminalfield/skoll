@@ -18,6 +18,33 @@ const QUIT_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long to wait for the socket before logging that it is missing.
 const CONNECT_WARN_AFTER: Duration = Duration::from_secs(5);
 
+/// IDs for `observe_property`. ID 1 is reserved for `path` (milestone 5).
+const OBSERVE_PAUSE: u64 = 2;
+const OBSERVE_EOF_REACHED: u64 = 3;
+const OBSERVE_SEEKABLE: u64 = 4;
+
+/// Events not worth logging: they arrive with every seek.
+const QUIET_EVENTS: &[&str] = &[
+    "seek",
+    "playback-restart",
+    "property-change",
+    "video-reconfig",
+    "audio-reconfig",
+];
+
+/// What Skoll knows about mpv, from its events and observed properties.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct MpvState {
+    /// A file is open and ready to seek. False while mpv is idle.
+    pub file_loaded: bool,
+    /// Counts loaded files, so a newly dropped file can be noticed.
+    pub file_generation: u64,
+    /// mpv's pause state. `None` until mpv reports it.
+    pub paused: Option<bool>,
+    /// mpv reached the end of the file. With `--keep-open` it then holds the last frame.
+    pub eof_reached: bool,
+}
+
 pub struct Mpv {
     instance: u32,
     child: Child,
@@ -27,6 +54,7 @@ pub struct Mpv {
     pending: Vec<u8>,
     launched: Instant,
     warned_no_socket: bool,
+    state: MpvState,
 }
 
 impl Mpv {
@@ -73,15 +101,19 @@ impl Mpv {
             pending: Vec::new(),
             launched: Instant::now(),
             warned_no_socket: false,
+            state: MpvState::default(),
         })
+    }
+
+    pub fn state(&self) -> &MpvState {
+        &self.state
     }
 
     pub fn uptime(&self) -> Duration {
         self.launched.elapsed()
     }
 
-    #[cfg(test)]
-    fn is_connected(&self) -> bool {
+    pub fn is_connected(&self) -> bool {
         self.stream.is_some()
     }
 
@@ -129,6 +161,16 @@ impl Mpv {
                     self.launched.elapsed().as_millis()
                 );
                 self.stream = Some(stream);
+                self.pending.clear();
+                // mpv replies to each with the current value, so the state is complete again
+                // even after a reconnect.
+                self.send(&json!({ "command": ["observe_property", OBSERVE_PAUSE, "pause"] }));
+                self.send(&json!({
+                    "command": ["observe_property", OBSERVE_EOF_REACHED, "eof-reached"]
+                }));
+                self.send(&json!({
+                    "command": ["observe_property", OBSERVE_SEEKABLE, "seekable"]
+                }));
             }
             Err(err) => {
                 if !self.warned_no_socket && self.launched.elapsed() > CONNECT_WARN_AFTER {
@@ -179,11 +221,16 @@ impl Mpv {
     }
 
     fn handle_message(&mut self, message: &Value) {
-        if let Some(event) = message.get("event") {
-            log!(self.instance, "mpv event: {event}");
-        } else if message.get("error").and_then(Value::as_str) != Some("success") {
-            log!(self.instance, "mpv error reply: {message}");
+        let Some(event) = message.get("event").and_then(Value::as_str) else {
+            if message.get("error").and_then(Value::as_str) != Some("success") {
+                log!(self.instance, "mpv error reply: {message}");
+            }
+            return;
+        };
+        if !QUIET_EVENTS.contains(&event) {
+            log!(self.instance, "mpv event: {message}");
         }
+        apply_event(&mut self.state, event, message);
     }
 
     /// Sends `quit`, waits briefly, kills mpv if needed and deletes the socket.
@@ -261,6 +308,32 @@ fn socket_owner_pid(name: &str) -> Option<libc::pid_t> {
     let rest = name.strip_prefix("skoll-")?.strip_suffix(".sock")?;
     let (pid, _suffix) = rest.split_once('-')?;
     pid.parse().ok().filter(|&pid| pid > 0)
+}
+
+/// Updates the state from one mpv event.
+///
+/// Whether a file is loaded comes from the `seekable` property, not from `file-loaded` events:
+/// mpv sends an observed property's current value on connect, so a file that loaded before Skoll
+/// connected is still noticed. `seekable` has no value while no file is open, including between
+/// two files.
+fn apply_event(state: &mut MpvState, event: &str, message: &Value) {
+    if event != "property-change" {
+        return;
+    }
+    // mpv sends no data while no file is open.
+    let data = message.get("data").and_then(Value::as_bool);
+    match message.get("id").and_then(Value::as_u64) {
+        Some(OBSERVE_PAUSE) => state.paused = data,
+        Some(OBSERVE_EOF_REACHED) => state.eof_reached = data.unwrap_or(false),
+        Some(OBSERVE_SEEKABLE) => {
+            let loaded = data.is_some();
+            if loaded && !state.file_loaded {
+                state.file_generation += 1;
+            }
+            state.file_loaded = loaded;
+        }
+        _ => {}
+    }
 }
 
 fn remove_socket(socket: &Path) {
@@ -349,6 +422,53 @@ mod tests {
         }
         drop(mpv);
         assert!(!socket.exists());
+    }
+
+    fn event(text: &str) -> (String, Value) {
+        let message: Value = serde_json::from_str(text).unwrap();
+        (message["event"].as_str().unwrap().to_owned(), message)
+    }
+
+    #[test]
+    fn tracks_state_from_events() {
+        let mut state = MpvState::default();
+        // Messages as mpv 0.41 sends them when a file is dropped onto the window.
+        for text in [
+            r#"{"event":"property-change","id":2,"name":"pause","data":true}"#,
+            r#"{"event":"property-change","id":3,"name":"eof-reached"}"#,
+            r#"{"event":"property-change","id":4,"name":"seekable"}"#,
+            r#"{"event":"start-file","playlist_entry_id":1}"#,
+            r#"{"event":"file-loaded"}"#,
+            r#"{"event":"property-change","id":3,"name":"eof-reached","data":false}"#,
+            r#"{"event":"property-change","id":4,"name":"seekable","data":true}"#,
+        ] {
+            let (name, message) = event(text);
+            apply_event(&mut state, &name, &message);
+        }
+        assert_eq!(
+            state,
+            MpvState {
+                file_loaded: true,
+                file_generation: 1,
+                paused: Some(true),
+                eof_reached: false,
+            }
+        );
+
+        // The same file is dropped again.
+        for text in [
+            r#"{"event":"property-change","id":3,"name":"eof-reached","data":true}"#,
+            r#"{"event":"end-file","reason":"stop","playlist_entry_id":1}"#,
+            r#"{"event":"property-change","id":4,"name":"seekable"}"#,
+            r#"{"event":"file-loaded"}"#,
+            r#"{"event":"property-change","id":4,"name":"seekable","data":true}"#,
+        ] {
+            let (name, message) = event(text);
+            apply_event(&mut state, &name, &message);
+        }
+        assert!(state.file_loaded);
+        assert!(state.eof_reached);
+        assert_eq!(state.file_generation, 2);
     }
 
     #[test]

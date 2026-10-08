@@ -175,7 +175,9 @@ The background thread applies these rules on each wake.
 3. **Transport playing.** Twice per second, read `time-pos` and compare it with the expected video time. If the difference exceeds one frame, seek again.
 4. **Position jump while playing.** If the song position moves by more than the elapsed time plus a tolerance (start with 50 ms), seek immediately. This covers loops and clicks in the timeline.
 5. **Pause state.** mpv's pause state must always match the transport. If the user pauses mpv by hand, the next wake corrects it.
-6. **Seek throttle.** Send at most 30 seeks per second. If several positions arrive between sends, only the latest one is sent.
+6. **Seek throttle.** Send at most 30 seeks per second: at least 32 ms apart, so a seek can go out on every second 60 Hz wake despite wake-up jitter. If several positions arrive between sends, only the latest one is sent.
+
+A negative video time is sent as a seek to 0. mpv treats a negative absolute seek as counted back from the end of the file.
 
 Frame duration comes from `container-fps`.
 If mpv does not report a frame rate, assume 24 frames per second.

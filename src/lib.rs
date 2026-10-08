@@ -8,6 +8,7 @@ mod config;
 pub mod log;
 mod mpv;
 mod paths;
+mod sync;
 mod transport;
 mod worker;
 
@@ -25,8 +26,30 @@ pub struct Skoll {
     _worker: Worker,
 }
 
-#[derive(Params, Default)]
-struct SkollParams {}
+#[derive(Params)]
+pub(crate) struct SkollParams {
+    /// The song time in seconds at which the video's first frame appears.
+    #[id = "offset"]
+    pub offset: FloatParam,
+}
+
+impl Default for SkollParams {
+    fn default() -> Self {
+        Self {
+            offset: FloatParam::new(
+                "Offset",
+                0.0,
+                FloatRange::Linear {
+                    min: -3600.0,
+                    max: 3600.0,
+                },
+            )
+            .with_unit(" s")
+            .with_step_size(0.001)
+            .with_value_to_string(formatters::v2s_f32_rounded(3)),
+        }
+    }
+}
 
 impl Default for Skoll {
     fn default() -> Self {
@@ -34,10 +57,11 @@ impl Default for Skoll {
         log!(instance, "created: {} {}", Self::NAME, Self::VERSION);
 
         let transport = Arc::new(SharedTransport::default());
+        let params = Arc::new(SkollParams::default());
         Self {
-            params: Arc::new(SkollParams::default()),
             instance,
-            _worker: Worker::spawn(instance, transport.clone(), Config::load),
+            _worker: Worker::spawn(instance, transport.clone(), params.clone(), Config::load),
+            params,
             transport,
         }
     }
