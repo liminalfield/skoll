@@ -113,7 +113,7 @@ fn run(
         if let Some(mpv) = supervisor.connected_mpv() {
             let offset = f64::from(params.offset.value());
             for action in sync.tick(now, &snapshot, offset, mpv.state()) {
-                apply(instance, mpv, &action);
+                apply(instance, mpv, &mut sync, &snapshot, offset, &action);
             }
         }
 
@@ -128,7 +128,17 @@ fn run(
     }
 }
 
-fn apply(instance: u32, mpv: &mut Mpv, action: &Action) {
+/// How long a drift check waits for mpv's reply.
+const TIME_POS_TIMEOUT: Duration = Duration::from_millis(50);
+
+fn apply(
+    instance: u32,
+    mpv: &mut Mpv,
+    sync: &mut Sync,
+    snapshot: &TransportSnapshot,
+    offset: f64,
+    action: &Action,
+) {
     match *action {
         Action::Seek { to, reason } => {
             log!(instance, "seek to {} ({reason})", format_time(to));
@@ -137,6 +147,23 @@ fn apply(instance: u32, mpv: &mut Mpv, action: &Action) {
         Action::SetPause(pause) => {
             log!(instance, "{} mpv", if pause { "pause" } else { "unpause" });
             mpv.send(&json!({ "command": ["set_property", "pause", pause] }));
+        }
+        Action::CheckDrift => {
+            let Some(reading) = mpv.query_time_pos(TIME_POS_TIMEOUT) else {
+                return;
+            };
+            let fps = mpv.state().fps;
+            if let Some(check) = sync.on_time_pos(&reading, snapshot, offset, fps) {
+                log!(
+                    instance,
+                    "drift {:+.1} ms ({:+} frames) at {}, query took {:.2} ms{}",
+                    check.error_seconds * 1000.0,
+                    check.error_frames,
+                    format_time(check.expected),
+                    reading.received.duration_since(reading.sent).as_secs_f64() * 1000.0,
+                    if check.seek { ", correcting" } else { "" }
+                );
+            }
         }
     }
 }
@@ -300,6 +327,7 @@ mod tests {
         let snapshot = TransportSnapshot {
             playing: true,
             pos_seconds: Some(61.5),
+            pos_at: Instant::now(),
             sample_rate: 48_000.0,
             blocks: 0,
         };
@@ -311,6 +339,7 @@ mod tests {
         let snapshot = TransportSnapshot {
             playing: false,
             pos_seconds: None,
+            pos_at: Instant::now(),
             sample_rate: 44_100.0,
             blocks: 0,
         };
@@ -383,7 +412,7 @@ mod tests {
                 assert!(mpv.poll().is_none(), "mpv exited");
                 if mpv.is_connected() {
                     for action in sync.tick(Instant::now(), &transport, offset, mpv.state()) {
-                        apply(0, &mut mpv, &action);
+                        apply(0, &mut mpv, &mut sync, &transport, offset, &action);
                     }
                 }
                 thread::sleep(Duration::from_millis(16));
@@ -407,6 +436,7 @@ mod tests {
         let stopped_at = |pos: f64| TransportSnapshot {
             playing: false,
             pos_seconds: Some(pos),
+            pos_at: Instant::now(),
             sample_rate: 48_000.0,
             blocks: 0,
         };
@@ -432,6 +462,30 @@ mod tests {
         .unwrap();
         run_for(stopped_at(3.0), 10.0, Duration::from_millis(300));
         assert_eq!(query("pause").as_bool(), Some(true));
+
+        // Play from 20 s in real time. The frame on screen stays within one frame.
+        let playing_from = |pos: f64| TransportSnapshot {
+            playing: true,
+            pos_at: Instant::now(),
+            ..stopped_at(pos)
+        };
+        let frame_error = |transport: &TransportSnapshot| -> i64 {
+            let before = Instant::now();
+            let time_pos = query("time-pos").as_f64().unwrap();
+            let expected = transport.pos_seconds_at(before).unwrap();
+            (time_pos * 24.0).round() as i64 - (expected * 24.0).floor() as i64
+        };
+        let play = playing_from(20.0);
+        run_for(play, 0.0, Duration::from_secs(2));
+        assert_eq!(query("pause").as_bool(), Some(false));
+        let error = frame_error(&play);
+        assert!(error.abs() <= 1, "{error} frames off after 2 s");
+
+        // A loop jumps back to 5 s: rule 4 follows it.
+        let looped = playing_from(5.0);
+        run_for(looped, 0.0, Duration::from_secs(1));
+        let error = frame_error(&looped);
+        assert!(error.abs() <= 1, "{error} frames off after the loop jump");
     }
 
     fn missing_mpv(_: u32) -> Config {

@@ -186,13 +186,17 @@ Claude Code should verify each command against the current mpv manual.
 The background thread applies these rules on each wake.
 
 1. **Transport stopped.** Pause mpv. If the song position changed since the last wake, seek to the new video time. Scrubbing in Bitwig then scrubs the picture.
-2. **Transport starts.** Seek to the video time, then unpause.
+2. **Transport starts.** Seek to the video time, then unpause. If rule 6 delays the seek, the unpause waits for it.
 3. **Transport playing.** Twice per second, read `time-pos` and compare it with the expected video time. If the difference exceeds one frame, seek again.
+   - `time-pos` is the timestamp of the frame on screen, so it moves in whole frames. The check compares frame numbers: the shown frame (`time-pos` rounded to a frame) against the frame the expected time falls in (rounded down). A seek happens when they differ by more than one frame.
+   - The expected time is taken at the midpoint between sending the query and receiving the reply, projected from when `process()` last read the song position.
+   - No check within 300 ms of a seek, while mpv restarts playback.
 4. **Position jump while playing.** If the song position moves by more than the elapsed time plus a tolerance (start with 50 ms), seek immediately. This covers loops and clicks in the timeline.
 5. **Pause state.** mpv's pause state must always match the transport. If the user pauses mpv by hand, the next wake corrects it.
 6. **Seek throttle.** Send at most 30 seeks per second: at least 32 ms apart, so a seek can go out on every second 60 Hz wake despite wake-up jitter. If several positions arrive between sends, only the latest one is sent.
 
 A negative video time is sent as a seek to 0. mpv treats a negative absolute seek as counted back from the end of the file.
+While playing with a negative video time, mpv stays paused on frame 0, and starts with a seek to 0 when the video time reaches 0.
 
 Frame duration comes from `container-fps`.
 If mpv does not report a frame rate, assume 24 frames per second.

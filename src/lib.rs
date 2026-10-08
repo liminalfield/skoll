@@ -121,9 +121,11 @@ impl Plugin for Skoll {
         // Audio passes through unchanged: the buffer is processed in place.
         // `pos_seconds()` prefers the host's seconds and falls back to samples / sample rate.
         let transport = context.transport();
+        // `Instant::now()` is a vDSO clock read: no syscall, no allocation.
         self.transport.store(
             transport.playing,
             transport.pos_seconds(),
+            std::time::Instant::now(),
             transport.sample_rate,
         );
         ProcessStatus::Normal

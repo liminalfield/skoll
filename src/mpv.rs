@@ -25,6 +25,9 @@ const SCRIPT: &str = include_str!("skoll.lua");
 const OBSERVE_PAUSE: u64 = 2;
 const OBSERVE_EOF_REACHED: u64 = 3;
 const OBSERVE_SEEKABLE: u64 = 4;
+const OBSERVE_FPS: u64 = 5;
+/// Request IDs for queries. Commands without an ID get replies with ID 0.
+const FIRST_REQUEST_ID: u64 = 1000;
 
 /// Events not worth logging: they arrive with every seek.
 const QUIET_EVENTS: &[&str] = &[
@@ -46,6 +49,16 @@ pub struct MpvState {
     pub paused: Option<bool>,
     /// mpv reached the end of the file. With `--keep-open` it then holds the last frame.
     pub eof_reached: bool,
+    /// The file's frame rate (`container-fps`), when known.
+    pub fps: Option<f64>,
+}
+
+/// One `time-pos` reading, with when the query was sent and the reply arrived.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimePosReading {
+    pub time_pos: f64,
+    pub sent: Instant,
+    pub received: Instant,
 }
 
 pub struct Mpv {
@@ -57,6 +70,9 @@ pub struct Mpv {
     pending: Vec<u8>,
     launched: Instant,
     warned_no_socket: bool,
+    next_request_id: u64,
+    /// The latest reply that carried a request ID.
+    reply: Option<(u64, Value)>,
     state: MpvState,
 }
 
@@ -112,6 +128,8 @@ impl Mpv {
             launched: Instant::now(),
             warned_no_socket: false,
             state: MpvState::default(),
+            next_request_id: FIRST_REQUEST_ID,
+            reply: None,
         })
     }
 
@@ -157,6 +175,40 @@ impl Mpv {
         }
     }
 
+    /// Reads `time-pos`, waiting up to `timeout` for the reply. Blocks the calling thread, but
+    /// mpv usually answers in well under a millisecond, and the send and receive times bracket
+    /// the moment mpv read the value.
+    pub fn query_time_pos(&mut self, timeout: Duration) -> Option<TimePosReading> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let sent = Instant::now();
+        self.send(&json!({ "command": ["get_property", "time-pos"], "request_id": id }));
+
+        while sent.elapsed() < timeout {
+            self.read_messages();
+            if let Some((reply_id, reply)) = self.reply.take() {
+                if reply_id == id {
+                    let received = Instant::now();
+                    let time_pos = reply.get("data").and_then(Value::as_f64)?;
+                    return Some(TimePosReading {
+                        time_pos,
+                        sent,
+                        received,
+                    });
+                }
+            }
+            // The connection dropped while waiting.
+            self.stream.as_ref()?;
+            thread::sleep(Duration::from_micros(100));
+        }
+        log!(
+            self.instance,
+            "no time-pos reply within {} ms",
+            timeout.as_millis()
+        );
+        None
+    }
+
     fn connect(&mut self) {
         match UnixStream::connect(&self.socket) {
             Ok(stream) => {
@@ -180,6 +232,9 @@ impl Mpv {
                 }));
                 self.send(&json!({
                     "command": ["observe_property", OBSERVE_SEEKABLE, "seekable"]
+                }));
+                self.send(&json!({
+                    "command": ["observe_property", OBSERVE_FPS, "container-fps"]
                 }));
             }
             Err(err) => {
@@ -234,6 +289,10 @@ impl Mpv {
         let Some(event) = message.get("event").and_then(Value::as_str) else {
             if message.get("error").and_then(Value::as_str) != Some("success") {
                 log!(self.instance, "mpv error reply: {message}");
+            }
+            match message.get("request_id").and_then(Value::as_u64) {
+                Some(id) if id >= FIRST_REQUEST_ID => self.reply = Some((id, message.clone())),
+                _ => {}
             }
             return;
         };
@@ -345,6 +404,12 @@ fn apply_event(state: &mut MpvState, event: &str, message: &Value) {
     match message.get("id").and_then(Value::as_u64) {
         Some(OBSERVE_PAUSE) => state.paused = data,
         Some(OBSERVE_EOF_REACHED) => state.eof_reached = data.unwrap_or(false),
+        Some(OBSERVE_FPS) => {
+            state.fps = message
+                .get("data")
+                .and_then(Value::as_f64)
+                .filter(|fps| *fps > 0.0)
+        }
         Some(OBSERVE_SEEKABLE) => {
             let loaded = data.is_some();
             if loaded && !state.file_loaded {
@@ -474,6 +539,7 @@ mod tests {
                 file_generation: 1,
                 paused: Some(true),
                 eof_reached: false,
+                fps: None,
             }
         );
 
