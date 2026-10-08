@@ -4,10 +4,14 @@ use nih_plug::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+mod config;
 pub mod log;
+mod mpv;
+mod paths;
 mod transport;
 mod worker;
 
+use config::Config;
 use transport::SharedTransport;
 use worker::Worker;
 
@@ -33,7 +37,7 @@ impl Default for Skoll {
         Self {
             params: Arc::new(SkollParams::default()),
             instance,
-            _worker: Worker::spawn(instance, transport.clone()),
+            _worker: Worker::spawn(instance, transport.clone(), Config::load),
             transport,
         }
     }
