@@ -10,6 +10,7 @@ pub mod log;
 mod mpv;
 mod paths;
 mod sync;
+mod time_text;
 mod transport;
 mod video_path;
 mod worker;
@@ -35,6 +36,14 @@ pub(crate) struct SkollParams {
     #[id = "offset"]
     pub offset: FloatParam,
 
+    /// A fine adjustment in milliseconds, added to Offset.
+    #[id = "nudge"]
+    pub nudge: FloatParam,
+
+    /// Off quits mpv; on relaunches it with the video.
+    #[id = "show"]
+    pub show_video: BoolParam,
+
     /// The video file. Plugin state, not a parameter: saved with the project.
     #[persist = "video-path"]
     pub video_path: StoredPath,
@@ -47,19 +56,39 @@ impl Default for SkollParams {
 }
 
 impl SkollParams {
+    /// Offset plus Nudge, in seconds.
+    pub fn total_offset(&self) -> f64 {
+        f64::from(self.offset.value()) + f64::from(self.nudge.value()) / 1000.0
+    }
+
     fn new(instance: u32) -> Self {
         Self {
+            // Cube-law skew: the middle of the knob sweeps fractions of a second, the ends reach
+            // an hour. Nudge gives fine control at any offset.
             offset: FloatParam::new(
                 "Offset",
                 0.0,
-                FloatRange::Linear {
+                FloatRange::SymmetricalSkewed {
                     min: -3600.0,
                     max: 3600.0,
+                    factor: 1.0 / 3.0,
+                    center: 0.0,
                 },
             )
-            .with_unit(" s")
             .with_step_size(0.001)
-            .with_value_to_string(formatters::v2s_f32_rounded(3)),
+            .with_value_to_string(Arc::new(time_text::offset_to_string))
+            .with_string_to_value(Arc::new(time_text::string_to_offset)),
+            nudge: FloatParam::new(
+                "Nudge",
+                0.0,
+                FloatRange::Linear {
+                    min: -1000.0,
+                    max: 1000.0,
+                },
+            )
+            .with_unit(" ms")
+            .with_step_size(1.0),
+            show_video: BoolParam::new("Show Video", true),
             video_path: StoredPath::new(instance),
         }
     }

@@ -1,45 +1,67 @@
 -- Loaded into Skoll's mpv with --script. Right-click or O opens a file dialog and loads the
 -- chosen video. Dragging a file onto the window also works when the file manager runs on the
 -- same display as mpv.
+--
+-- Skoll writes `local configured_dialog = ...` above this script: the config file's
+-- file_dialog list, or nil.
 
--- The dialog program. Overridable with --script-opts=skoll-zenity=<path>, for tests.
-local zenity = mp.get_opt("skoll-zenity") or "zenity"
+local title = "Open video in Skoll"
 local hint = "Right-click to open a video"
+local video_globs = "*.mp4 *.m4v *.mov *.mkv *.webm *.avi *.mxf *.mpg *.mpeg *.ts *.MP4 *.MOV *.MKV"
+
+local dialogs = configured_dialog and { configured_dialog } or {
+    -- GTK 4 normally hands file dialogs to the desktop portal, which draws them on the host
+    -- desktop. In a nested setup that window lands outside the nested display, takes focus and
+    -- drops it out of fullscreen. Without portals, GTK draws the dialog on mpv's own display.
+    {
+        "env", "GDK_DEBUG=no-portals", "zenity", "--file-selection", "--title=" .. title,
+        "--file-filter=Videos | " .. video_globs, "--file-filter=All files | *",
+    },
+    {
+        "kdialog", "--title", title, "--getopenfilename", os.getenv("HOME") or ".",
+        "Videos (" .. video_globs .. ")",
+    },
+    { "yad", "--file", "--title=" .. title, "--file-filter=Videos | " .. video_globs },
+}
+
 local dialog_open = false
+
+-- Runs dialogs[i]. A dialog that is not installed falls through to the next one.
+local function run_dialog(i)
+    local args = dialogs[i]
+    if not args then
+        dialog_open = false
+        mp.osd_message("No file dialog found. Install zenity, kdialog or yad, "
+            .. "or set file_dialog in Skoll's config file.", 10)
+        return
+    end
+    mp.command_native_async({
+        name = "subprocess",
+        args = args,
+        capture_stdout = true,
+        -- Keep the dialog open when a file loads or mpv goes idle.
+        playback_only = false,
+    }, function(success, result)
+        -- "init" means the program could not start; env exits with 127 when it can't find one.
+        if not success or result.error_string == "init" or result.status == 127 then
+            run_dialog(i + 1)
+            return
+        end
+        dialog_open = false
+        -- Dialogs exit with a non-zero status when cancelled.
+        local path = (result.stdout or ""):gsub("\n$", "")
+        if result.status == 0 and path ~= "" then
+            mp.commandv("loadfile", path, "replace")
+        end
+    end)
+end
 
 local function open_dialog()
     if dialog_open then
         return
     end
     dialog_open = true
-    mp.command_native_async({
-        name = "subprocess",
-        args = {
-            -- GTK 4 normally hands file dialogs to the desktop portal, which draws them on the
-            -- host desktop. In the nested setup that window lands on Hyprland, takes focus and
-            -- drops Bitwig's display out of fullscreen. Without portals, GTK draws the dialog
-            -- itself, on mpv's own display.
-            "env", "GDK_DEBUG=no-portals",
-            zenity, "--file-selection", "--title=Open video in Skoll",
-            "--file-filter=Videos | *.mp4 *.m4v *.mov *.mkv *.webm *.avi *.mxf *.mpg *.mpeg *.ts *.MP4 *.MOV *.MKV",
-            "--file-filter=All files | *",
-        },
-        capture_stdout = true,
-        -- Keep the dialog open when a file loads or mpv goes idle.
-        playback_only = false,
-    }, function(success, result)
-        dialog_open = false
-        -- env exits with 127 when it cannot find zenity.
-        if not success or result.error_string == "init" or result.status == 127 then
-            mp.osd_message("Could not run " .. zenity .. ". Install zenity to open videos.", 10)
-            return
-        end
-        -- zenity exits with 1 when the dialog is cancelled.
-        local path = (result.stdout or ""):gsub("\n$", "")
-        if result.status == 0 and path ~= "" then
-            mp.commandv("loadfile", path, "replace")
-        end
-    end)
+    run_dialog(1)
 end
 
 mp.add_forced_key_binding("MBTN_RIGHT", "skoll-open-click", open_dialog)

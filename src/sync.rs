@@ -64,6 +64,8 @@ pub struct Sync {
     /// "only the latest" holds.
     pending_seek: Option<&'static str>,
     last_seek: Option<Instant>,
+    /// Where the last seek went, to skip seeks that would show the same frame.
+    last_seek_to: Option<f64>,
     seen_file_generation: u64,
     pause_sent: Option<(bool, Instant)>,
     next_drift_check: Option<Instant>,
@@ -75,6 +77,7 @@ impl Sync {
         self.seen_file_generation = 0;
         self.pause_sent = None;
         self.last_seek = None;
+        self.last_seek_to = None;
     }
 
     pub fn tick(
@@ -134,11 +137,19 @@ impl Sync {
             .is_none_or(|last| now.duration_since(last) >= MIN_SEEK_INTERVAL);
         if mpv.file_loaded && seek_allowed {
             if let Some(reason) = self.pending_seek.take() {
-                actions.push(Action::Seek {
-                    to: target.max(0.0),
-                    reason,
-                });
-                self.last_seek = Some(now);
+                let to = target.max(0.0);
+                // Moving the playhead or Offset within one frame, or while the video time stays
+                // below 0, shows the same frame.
+                let fps = mpv.fps.unwrap_or(DEFAULT_FPS);
+                let same_frame = reason == "playhead moved"
+                    && self
+                        .last_seek_to
+                        .is_some_and(|last| frame_index(last, fps) == frame_index(to, fps));
+                if !same_frame {
+                    actions.push(Action::Seek { to, reason });
+                    self.last_seek = Some(now);
+                    self.last_seek_to = Some(to);
+                }
             }
         }
 
@@ -209,6 +220,12 @@ impl Sync {
             seek,
         })
     }
+}
+
+/// The frame showing at video time `t`.
+fn frame_index(t: f64, fps: f64) -> i64 {
+    // The epsilon keeps a time exactly on a frame boundary in that frame despite rounding.
+    (t * fps + 1e-6).floor() as i64
 }
 
 #[cfg(test)]
@@ -298,6 +315,32 @@ mod tests {
             seeks(&sync.tick(frame(t0, 3), &stopped_at(7.25), 0.0, &mpv)),
             [7.25]
         );
+    }
+
+    #[test]
+    fn skips_seeks_that_show_the_same_frame() {
+        let t0 = Instant::now();
+        let mut sync = Sync::default();
+        let mpv = loaded(true);
+
+        // Offset 10 s with the playhead at 1 s: frame 0. Turning Offset further changes nothing.
+        assert_eq!(
+            seeks(&sync.tick(frame(t0, 0), &stopped_at(1.0), 10.0, &mpv)),
+            [0.0]
+        );
+        assert!(seeks(&sync.tick(frame(t0, 3), &stopped_at(1.0), 11.0, &mpv)).is_empty());
+        assert!(seeks(&sync.tick(frame(t0, 6), &stopped_at(1.0), 12.0, &mpv)).is_empty());
+        // Within one 24 fps frame (41.7 ms): no seek. Into the next frame: seek.
+        sync.tick(frame(t0, 9), &stopped_at(5.0), 0.0, &mpv);
+        assert!(seeks(&sync.tick(frame(t0, 12), &stopped_at(5.03), 0.0, &mpv)).is_empty());
+        assert_eq!(
+            seeks(&sync.tick(frame(t0, 15), &stopped_at(5.05), 0.0, &mpv)),
+            [5.05]
+        );
+        // A stop always seeks, to correct wherever playback left mpv.
+        sync.tick(frame(t0, 18), &playing_at(5.05, frame(t0, 18)), 0.0, &mpv);
+        let actions = sync.tick(frame(t0, 21), &stopped_at(5.05), 0.0, &mpv);
+        assert_eq!(seek_reasons(&actions), ["transport stopped"]);
     }
 
     #[test]

@@ -40,6 +40,9 @@ pub struct Config {
     pub window_flags: Option<Vec<String>>,
     /// Added after the window flags.
     pub extra_flags: Vec<String>,
+    /// A file dialog program and its arguments, run on right-click. It must print the chosen
+    /// path. Without it, zenity, kdialog and yad are tried in turn.
+    pub file_dialog: Option<Vec<String>>,
 }
 
 impl Config {
@@ -76,6 +79,18 @@ impl Config {
         self.mpv_path.as_deref().unwrap_or(Path::new("mpv"))
     }
 
+    /// Lua that configures the embedded mpv script: sets `configured_dialog`.
+    pub fn script_prelude(&self) -> String {
+        let dialog = match &self.file_dialog {
+            Some(args) if !args.is_empty() => {
+                let args: Vec<String> = args.iter().map(|a| lua_string(a)).collect();
+                format!("{{ {} }}", args.join(", "))
+            }
+            _ => "nil".to_owned(),
+        };
+        format!("local configured_dialog = {dialog}")
+    }
+
     /// The full mpv command line, without the binary.
     pub fn mpv_args(&self, socket: &Path) -> Vec<String> {
         let window_flags = match &self.window_flags {
@@ -91,6 +106,24 @@ impl Config {
             .chain([format!("--input-ipc-server={}", socket.display())])
             .collect()
     }
+}
+
+/// A Lua string literal.
+fn lua_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
@@ -149,6 +182,19 @@ mod tests {
             ]
         );
         assert_eq!(config.mpv_path(), Path::new("/opt/mpv/bin/mpv"));
+    }
+
+    #[test]
+    fn script_prelude_quotes_the_dialog() {
+        assert_eq!(
+            Config::default().script_prelude(),
+            "local configured_dialog = nil"
+        );
+        let config = parse(r#"file_dialog = ["my picker", "--title=\"Open\"", "C:\\x"]"#).unwrap();
+        assert_eq!(
+            config.script_prelude(),
+            r#"local configured_dialog = { "my picker", "--title=\"Open\"", "C:\\x" }"#
+        );
     }
 
     #[test]

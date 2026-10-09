@@ -81,15 +81,17 @@ pub struct Mpv {
 
 impl Mpv {
     /// Starts mpv. The socket appears a little later; [`Mpv::poll()`] connects to it.
+    /// `script_prelude` is Lua placed before the embedded script, to configure it.
     pub fn launch(
         instance: u32,
         program: &Path,
         args: &[String],
         socket: &Path,
+        script_prelude: &str,
     ) -> io::Result<Self> {
         remove_file_quietly(socket);
         let script = script_path(socket);
-        fs::write(&script, SCRIPT)?;
+        fs::write(&script, format!("{script_prelude}\n{SCRIPT}"))?;
         let args: Vec<String> = args
             .iter()
             .cloned()
@@ -467,6 +469,7 @@ fn write_all_nonblocking(stream: &mut UnixStream, mut bytes: &[u8]) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::paths;
 
     /// Launches a real mpv without a window. Skipped when mpv is not installed.
@@ -476,7 +479,7 @@ mod tests {
             .map(|&f| f.to_owned())
             .chain([format!("--input-ipc-server={}", socket.display())])
             .collect();
-        match Mpv::launch(0, Path::new("mpv"), &args, socket) {
+        match Mpv::launch(0, Path::new("mpv"), &args, socket, "") {
             Ok(mpv) => Some(mpv),
             Err(err) if err.kind() == ErrorKind::NotFound => None,
             Err(err) => panic!("could not launch mpv: {err}"),
@@ -598,12 +601,14 @@ mod tests {
         let args: Vec<String> = ["--idle=yes", "--no-terminal", "--vo=null", "--no-audio"]
             .iter()
             .map(|&f| f.to_owned())
-            .chain([
-                format!("--script-opts=skoll-zenity={}", fake_zenity.display()),
-                format!("--input-ipc-server={}", socket.display()),
-            ])
+            .chain([format!("--input-ipc-server={}", socket.display())])
             .collect();
-        let mut mpv = match Mpv::launch(0, Path::new("mpv"), &args, &socket) {
+        let prelude = Config {
+            file_dialog: Some(vec![fake_zenity.display().to_string()]),
+            ..Config::default()
+        }
+        .script_prelude();
+        let mut mpv = match Mpv::launch(0, Path::new("mpv"), &args, &socket, &prelude) {
             Ok(mpv) => mpv,
             Err(err) if err.kind() == ErrorKind::NotFound => return,
             Err(err) => panic!("{err}"),
@@ -658,7 +663,7 @@ mod tests {
     #[test]
     fn missing_binary_is_not_found() {
         let socket = paths::socket_path();
-        let err = Mpv::launch(0, Path::new("/nonexistent/mpv"), &[], &socket)
+        let err = Mpv::launch(0, Path::new("/nonexistent/mpv"), &[], &socket, "")
             .err()
             .unwrap();
         assert_eq!(err.kind(), ErrorKind::NotFound);

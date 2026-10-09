@@ -107,7 +107,7 @@ fn run(
             log!(instance, "{message} ({})", describe(&snapshot));
         }
 
-        supervisor.tick(now);
+        supervisor.tick(now, params.show_video.value());
         if supervisor.launches != synced_launch {
             sync.reset_mpv();
             path_sync.reset_mpv();
@@ -115,7 +115,7 @@ fn run(
         }
         if let Some(mpv) = supervisor.connected_mpv() {
             sync_video_path(instance, mpv, &mut path_sync, params);
-            let offset = f64::from(params.offset.value());
+            let offset = params.total_offset();
             for action in sync.tick(now, &snapshot, offset, mpv.state()) {
                 apply(instance, mpv, &mut sync, &snapshot, offset, &action);
             }
@@ -242,7 +242,12 @@ impl ProcessWatch {
     }
 }
 
-/// Keeps one mpv process running. Dropping it quits mpv and deletes the socket.
+/// How long after the plugin is created before mpv first launches. The host restores the plugin
+/// state just after creating it, and Show Video may be off: don't flash a window first.
+const FIRST_LAUNCH_DELAY: Duration = Duration::from_millis(150);
+
+/// Keeps one mpv process running while Show Video is on. Dropping it quits mpv and deletes the
+/// socket.
 struct Supervisor {
     instance: u32,
     load_config: ConfigLoader,
@@ -254,6 +259,7 @@ struct Supervisor {
     gave_up: bool,
     /// Counts successful launches, so the sync state can be reset for a new mpv.
     launches: u64,
+    showing: bool,
 }
 
 impl Supervisor {
@@ -267,10 +273,11 @@ impl Supervisor {
             load_config,
             socket,
             mpv: None,
-            next_launch: Instant::now(),
+            next_launch: Instant::now() + FIRST_LAUNCH_DELAY,
             relaunch_delay: MIN_RELAUNCH_DELAY,
             gave_up: false,
             launches: 0,
+            showing: true,
         }
     }
 
@@ -279,7 +286,23 @@ impl Supervisor {
         self.mpv.as_mut().filter(|mpv| mpv.is_connected())
     }
 
-    fn tick(&mut self, now: Instant) {
+    fn tick(&mut self, now: Instant, show: bool) {
+        if show != self.showing {
+            self.showing = show;
+            if show {
+                log!(self.instance, "Show Video on");
+                self.next_launch = self.next_launch.min(now);
+                self.relaunch_delay = MIN_RELAUNCH_DELAY;
+            } else {
+                log!(self.instance, "Show Video off, closing mpv");
+                // Dropping quits mpv and deletes the socket.
+                self.mpv = None;
+            }
+        }
+        if !show {
+            return;
+        }
+
         if let Some(mpv) = &mut self.mpv {
             if mpv.poll().is_some() {
                 let uptime = mpv.uptime();
@@ -302,7 +325,14 @@ impl Supervisor {
         }
         let config = (self.load_config)(self.instance);
         let args = config.mpv_args(&self.socket);
-        match Mpv::launch(self.instance, config.mpv_path(), &args, &self.socket) {
+        let prelude = config.script_prelude();
+        match Mpv::launch(
+            self.instance,
+            config.mpv_path(),
+            &args,
+            &self.socket,
+            &prelude,
+        ) {
             Ok(mpv) => {
                 self.mpv = Some(mpv);
                 self.launches += 1;
@@ -431,7 +461,7 @@ mod tests {
         }
         .mpv_args(&socket);
         args.push(clip.display().to_string());
-        let mut mpv = match Mpv::launch(0, Path::new("mpv"), &args, &socket) {
+        let mut mpv = match Mpv::launch(0, Path::new("mpv"), &args, &socket, "") {
             Ok(mpv) => mpv,
             Err(err) if err.kind() == ErrorKind::NotFound => return,
             Err(err) => panic!("{err}"),
@@ -518,6 +548,53 @@ mod tests {
         run_for(looped, 0.0, Duration::from_secs(1));
         let error = frame_error(&looped);
         assert!(error.abs() <= 1, "{error} frames off after the loop jump");
+    }
+
+    fn headless_mpv(_: u32) -> Config {
+        Config {
+            window_flags: Some(vec!["--vo=null".to_owned()]),
+            ..Config::default()
+        }
+    }
+
+    /// Ticks until `done`, or panics after 5 s.
+    fn tick_until(supervisor: &mut Supervisor, show: bool, done: impl Fn(&mut Supervisor) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done(supervisor) {
+            assert!(Instant::now() < deadline, "timed out");
+            supervisor.tick(Instant::now(), show);
+            thread::sleep(Duration::from_millis(16));
+        }
+    }
+
+    #[test]
+    fn show_video_quits_and_relaunches_mpv() {
+        if std::process::Command::new("mpv")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let mut supervisor = Supervisor::new(0, headless_mpv);
+        tick_until(&mut supervisor, true, |s| s.connected_mpv().is_some());
+        assert_eq!(supervisor.launches, 1);
+        assert!(supervisor.socket.exists());
+
+        supervisor.tick(Instant::now(), false);
+        assert!(supervisor.mpv.is_none());
+        assert!(!supervisor.socket.exists());
+        // Stays closed while off.
+        for _ in 0..5 {
+            supervisor.tick(Instant::now(), false);
+        }
+        assert!(supervisor.mpv.is_none());
+
+        // On again: relaunched straight away, not after the relaunch delay.
+        supervisor.tick(Instant::now(), true);
+        assert!(supervisor.mpv.is_some());
+        assert_eq!(supervisor.launches, 2);
+        tick_until(&mut supervisor, true, |s| s.connected_mpv().is_some());
     }
 
     fn missing_mpv(_: u32) -> Config {
