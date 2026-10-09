@@ -51,6 +51,10 @@ Only the default mpv flags are tuned for the nested X11 case.
 - A file picker in a plugin editor. Videos are opened from the mpv window instead (section 6).
 - Windows and macOS builds.
 
+### Possible later work
+
+- **Timecode.** Sync works in seconds, so 23.976, 29.97 and other rates need nothing special. Users working from spotting notes would want timecode: Offset typed as `01:00:00:00` at the file's frame rate, with drop-frame for 29.97 and 59.94; the current position shown as timecode in the mpv window; and optionally the file's embedded start timecode used as the default Offset. Note for the README then: 23.976 non-drop timecode runs 0.1% slower than the wall clock, so burned-in timecode falls behind Bitwig's time display by about 3.6 s per hour. That is correct behaviour, not drift.
+
 ## 4. Prerequisites
 
 Install before the first Claude Code session:
