@@ -18,6 +18,7 @@ use crate::mpv::{self, Mpv};
 use crate::sync::{Action, Sync};
 use crate::transport::{format_time, SharedTransport, TransportSnapshot};
 use crate::video_path::{PathAction, PathSync};
+use crate::window::{WindowGeometry, WindowTracker};
 use crate::{log, paths, SkollParams};
 
 const WAKE_RATE_HZ: u32 = 60;
@@ -82,6 +83,8 @@ fn run(
     let mut supervisor = Supervisor::new(instance, load_config);
     let mut sync = Sync::default();
     let mut path_sync = PathSync::default();
+    let mut window = WindowTracker::new(instance);
+    let mut next_window_check = Instant::now();
     let mut synced_launch = 0;
     let mut was_playing = None;
     let mut process_watch = ProcessWatch::new(transport.load().blocks);
@@ -107,7 +110,7 @@ fn run(
             log!(instance, "{message} ({})", describe(&snapshot));
         }
 
-        supervisor.tick(now, params.show_video.value());
+        supervisor.tick(now, params.show_video.value(), params.window.get());
         if supervisor.launches != synced_launch {
             sync.reset_mpv();
             path_sync.reset_mpv();
@@ -115,6 +118,14 @@ fn run(
         }
         if let Some(mpv) = supervisor.connected_mpv() {
             sync_video_path(instance, mpv, &mut path_sync, params);
+            if now >= next_window_check {
+                next_window_check = now + WINDOW_CHECK_INTERVAL;
+                if let Some(geometry) = mpv.state().window_id.and_then(|id| window.geometry(id)) {
+                    if params.window.get() != Some(geometry) {
+                        params.window.remember(geometry);
+                    }
+                }
+            }
             let offset = params.total_offset();
             for action in sync.tick(now, &snapshot, offset, mpv.state()) {
                 apply(instance, mpv, &mut sync, &snapshot, offset, &action);
@@ -159,6 +170,9 @@ fn sync_video_path(instance: u32, mpv: &mut Mpv, path_sync: &mut PathSync, param
         None => {}
     }
 }
+
+/// How often to note where the mpv window is, so a relaunch puts it back there.
+const WINDOW_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How long a drift check waits for mpv's reply.
 const TIME_POS_TIMEOUT: Duration = Duration::from_millis(50);
@@ -286,7 +300,7 @@ impl Supervisor {
         self.mpv.as_mut().filter(|mpv| mpv.is_connected())
     }
 
-    fn tick(&mut self, now: Instant, show: bool) {
+    fn tick(&mut self, now: Instant, show: bool, geometry: Option<WindowGeometry>) {
         if show != self.showing {
             self.showing = show;
             if show {
@@ -324,7 +338,7 @@ impl Supervisor {
             return;
         }
         let config = (self.load_config)(self.instance);
-        let args = config.mpv_args(&self.socket);
+        let args = config.mpv_args(&self.socket, geometry);
         let prelude = config.script_prelude();
         match Mpv::launch(
             self.instance,
@@ -459,7 +473,7 @@ mod tests {
             window_flags: Some(vec!["--vo=null".to_owned()]),
             ..Config::default()
         }
-        .mpv_args(&socket);
+        .mpv_args(&socket, None);
         args.push(clip.display().to_string());
         let mut mpv = match Mpv::launch(0, Path::new("mpv"), &args, &socket, "") {
             Ok(mpv) => mpv,
@@ -562,7 +576,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !done(supervisor) {
             assert!(Instant::now() < deadline, "timed out");
-            supervisor.tick(Instant::now(), show);
+            supervisor.tick(Instant::now(), show, None);
             thread::sleep(Duration::from_millis(16));
         }
     }
@@ -581,17 +595,17 @@ mod tests {
         assert_eq!(supervisor.launches, 1);
         assert!(supervisor.socket.exists());
 
-        supervisor.tick(Instant::now(), false);
+        supervisor.tick(Instant::now(), false, None);
         assert!(supervisor.mpv.is_none());
         assert!(!supervisor.socket.exists());
         // Stays closed while off.
         for _ in 0..5 {
-            supervisor.tick(Instant::now(), false);
+            supervisor.tick(Instant::now(), false, None);
         }
         assert!(supervisor.mpv.is_none());
 
         // On again: relaunched straight away, not after the relaunch delay.
-        supervisor.tick(Instant::now(), true);
+        supervisor.tick(Instant::now(), true, None);
         assert!(supervisor.mpv.is_some());
         assert_eq!(supervisor.launches, 2);
         tick_until(&mut supervisor, true, |s| s.connected_mpv().is_some());

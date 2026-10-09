@@ -52,7 +52,9 @@ Right-click the window, or press `O` in it, and choose a video. The picture jump
 | Nudge | A fine trim of ±1000 ms, added to Offset. |
 | Show Video | Off closes the window; on reopens it with the same video at the playhead. Map it to a key to toggle the picture. |
 
-The project saves the video path, Offset and Nudge. Reopening the project reloads the video at the right frame. If the video has moved, mpv stays empty and the log says so.
+Move the window with a left-drag, or with Alt + left-drag under Openbox. Resize it with Alt + right-drag, or with mpv's `Alt+0`, `Alt+1` and `Alt+2` (half, native and double size). Skoll notes where the window is, and puts it back there when the window reopens.
+
+The project saves the video path, Offset, Nudge and the window's place. Reopening the project reloads the video at the right frame. If the video has moved, mpv stays empty and the log says so.
 
 Dragging a file onto the mpv window also loads it, but only from a file manager running on the same display as mpv.
 
@@ -79,7 +81,7 @@ extra_flags = ["--osd-level=1"]
 file_dialog = ["zenity", "--file-selection"]
 ```
 
-The default window flags open a 480 × 270 borderless window in the top right corner, above other windows. `--gpu-context=x11egl` forces an X11 window, so mpv opens in the same X display as Bitwig even when `WAYLAND_DISPLAY` is set.
+The default window flags open a 480 × 270 borderless window in the top right corner, above other windows. Once you move or resize the window, Skoll remembers that place instead, per project. `--gpu-context=x11egl` forces an X11 window, so mpv opens in the same X display as Bitwig even when `WAYLAND_DISPLAY` is set.
 
 Skoll always adds these flags, which the config cannot remove: `--idle=yes --force-window=yes --keep-open=yes --no-audio --hr-seek=yes --pause --no-terminal`, the IPC socket, and the Open Video script.
 

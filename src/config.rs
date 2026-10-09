@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::window::WindowGeometry;
 use crate::{log, paths};
 
 /// Flags Skoll needs for sync. The config file cannot remove these.
@@ -91,8 +92,9 @@ impl Config {
         format!("local configured_dialog = {dialog}")
     }
 
-    /// The full mpv command line, without the binary.
-    pub fn mpv_args(&self, socket: &Path) -> Vec<String> {
+    /// The full mpv command line, without the binary. `geometry`, where the window last was,
+    /// overrides any `--geometry` in the window flags.
+    pub fn mpv_args(&self, socket: &Path, geometry: Option<WindowGeometry>) -> Vec<String> {
         let window_flags = match &self.window_flags {
             Some(flags) => flags.clone(),
             None => DEFAULT_WINDOW_FLAGS.iter().map(|&f| f.to_owned()).collect(),
@@ -101,6 +103,7 @@ impl Config {
             .iter()
             .map(|&f| f.to_owned())
             .chain(window_flags)
+            .chain(geometry.map(|g| format!("--geometry={g}")))
             .chain(self.extra_flags.iter().cloned())
             // Last, so no other flag can move the socket.
             .chain([format!("--input-ipc-server={}", socket.display())])
@@ -141,7 +144,7 @@ mod tests {
 
     #[test]
     fn default_args() {
-        let args = Config::default().mpv_args(Path::new("/run/s.sock"));
+        let args = Config::default().mpv_args(Path::new("/run/s.sock"), None);
         assert_eq!(
             args,
             [
@@ -172,7 +175,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let args = config.mpv_args(Path::new("/run/s.sock"));
+        let args = config.mpv_args(Path::new("/run/s.sock"), None);
         assert_eq!(
             &args[CORE_FLAGS.len()..],
             [
@@ -180,6 +183,18 @@ mod tests {
                 "--osd-level=3",
                 "--input-ipc-server=/run/s.sock",
             ]
+        );
+        // A remembered window position comes after the configured one, so it wins.
+        let remembered = WindowGeometry {
+            x: 100,
+            y: 50,
+            width: 800,
+            height: 450,
+        };
+        let args = config.mpv_args(Path::new("/run/s.sock"), Some(remembered));
+        assert_eq!(
+            &args[CORE_FLAGS.len()..CORE_FLAGS.len() + 2],
+            ["--geometry=640x360+0+0", "--geometry=800x450+100+50"]
         );
         assert_eq!(config.mpv_path(), Path::new("/opt/mpv/bin/mpv"));
     }

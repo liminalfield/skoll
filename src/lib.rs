@@ -13,11 +13,13 @@ mod sync;
 mod time_text;
 mod transport;
 mod video_path;
+mod window;
 mod worker;
 
 use config::Config;
 use transport::SharedTransport;
 use video_path::StoredPath;
+use window::StoredWindow;
 use worker::Worker;
 
 /// Numbers plugin instances within one host process, so their log lines can be told apart.
@@ -47,6 +49,10 @@ pub(crate) struct SkollParams {
     /// The video file. Plugin state, not a parameter: saved with the project.
     #[persist = "video-path"]
     pub video_path: StoredPath,
+
+    /// Where the mpv window was last seen. Plugin state, saved with the project.
+    #[persist = "window"]
+    pub window: StoredWindow,
 }
 
 impl Default for SkollParams {
@@ -90,6 +96,7 @@ impl SkollParams {
             .with_step_size(1.0),
             show_video: BoolParam::new("Show Video", true),
             video_path: StoredPath::new(instance),
+            window: StoredWindow::default(),
         }
     }
 }

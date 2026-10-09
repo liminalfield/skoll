@@ -143,6 +143,14 @@ Default flags:
 - A missing file means the defaults above.
 - Changing the file must not need a rebuild. Reading it once at launch is enough.
 
+### Window placement
+
+- Every 250 ms the background thread reads the mpv window's position and size from the X server, using mpv's `window-id` property. mpv itself does not report its position.
+- The position is corrected for the window manager's frame (`_NET_FRAME_EXTENTS`), since `--geometry` places the frame.
+- The latest geometry is plugin state (`window`), saved with the project without marking it dirty. A relaunched mpv gets it as `--geometry=WxH+X+Y`, after the configured window flags.
+- Negative positions are clamped to 0, because in `--geometry` a negative number counts from the right or bottom edge.
+- Only X11 windows are tracked. On Wayland a client cannot learn its own position.
+
 ### Socket
 
 - Path: `$XDG_RUNTIME_DIR/skoll-<pid>-<random suffix>.sock`.
