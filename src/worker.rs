@@ -135,7 +135,7 @@ fn run(
 /// Keeps the stored video path and mpv's open file in step.
 fn sync_video_path(instance: u32, mpv: &mut Mpv, path_sync: &mut PathSync, params: &SkollParams) {
     let action = {
-        let Ok(stored) = params.video_path.read() else {
+        let Ok(stored) = params.video_path.path.read() else {
             return;
         };
         path_sync.tick(stored.as_deref(), mpv.path())
@@ -143,7 +143,7 @@ fn sync_video_path(instance: u32, mpv: &mut Mpv, path_sync: &mut PathSync, param
     match action {
         Some(PathAction::Store(path)) => {
             log!(instance, "video: {path}");
-            if let Ok(mut stored) = params.video_path.write() {
+            if let Ok(mut stored) = params.video_path.path.write() {
                 *stored = Some(path);
             }
         }

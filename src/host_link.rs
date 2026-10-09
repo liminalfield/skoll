@@ -29,6 +29,7 @@ pub struct HostLink {
     instance: u32,
     socket: Option<UdpSocket>,
     hello: Vec<u8>,
+    extension: SocketAddr,
     next_hello: Instant,
     latest: Option<HostTransport>,
     last_message: Option<Instant>,
@@ -36,6 +37,10 @@ pub struct HostLink {
 
 impl HostLink {
     pub fn new(instance: u32) -> Self {
+        Self::with_extension_port(instance, EXTENSION_PORT)
+    }
+
+    fn with_extension_port(instance: u32, port: u16) -> Self {
         let (socket, hello) = match bind() {
             Ok((socket, port)) => (Some(socket), format!("hello {port}").into_bytes()),
             Err(err) => {
@@ -47,6 +52,7 @@ impl HostLink {
             instance,
             socket,
             hello,
+            extension: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
             next_hello: Instant::now(),
             latest: None,
             last_message: None,
@@ -59,9 +65,8 @@ impl HostLink {
         let socket = self.socket.as_ref()?;
 
         if now >= self.next_hello {
-            let extension = SocketAddr::from((Ipv4Addr::LOCALHOST, EXTENSION_PORT));
             // Fails with ConnectionRefused while the extension isn't running. That's normal.
-            let _ = socket.send_to(&self.hello, extension);
+            let _ = socket.send_to(&self.hello, self.extension);
             self.next_hello = now + HELLO_INTERVAL;
         }
 
@@ -178,7 +183,9 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
 
-        let mut link = HostLink::new(0);
+        // Not the real port: a running Bitwig extension would answer too.
+        let fake_port = fake_extension.local_addr().unwrap().port();
+        let mut link = HostLink::with_extension_port(0, fake_port);
         let hello = String::from_utf8(link.hello.clone()).unwrap();
         let port: u16 = hello.strip_prefix("hello ").unwrap().parse().unwrap();
         let plugin = SocketAddr::from((Ipv4Addr::LOCALHOST, port));

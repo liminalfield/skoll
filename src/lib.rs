@@ -2,7 +2,7 @@
 
 use nih_plug::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 mod config;
 mod host_link;
@@ -16,6 +16,7 @@ mod worker;
 
 use config::Config;
 use transport::SharedTransport;
+use video_path::StoredPath;
 use worker::Worker;
 
 /// Numbers plugin instances within one host process, so their log lines can be told apart.
@@ -36,11 +37,17 @@ pub(crate) struct SkollParams {
 
     /// The video file. Plugin state, not a parameter: saved with the project.
     #[persist = "video-path"]
-    pub video_path: RwLock<Option<String>>,
+    pub video_path: StoredPath,
 }
 
 impl Default for SkollParams {
     fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl SkollParams {
+    fn new(instance: u32) -> Self {
         Self {
             offset: FloatParam::new(
                 "Offset",
@@ -53,7 +60,7 @@ impl Default for SkollParams {
             .with_unit(" s")
             .with_step_size(0.001)
             .with_value_to_string(formatters::v2s_f32_rounded(3)),
-            video_path: RwLock::new(None),
+            video_path: StoredPath::new(instance),
         }
     }
 }
@@ -64,7 +71,7 @@ impl Default for Skoll {
         log!(instance, "created: {} {}", Self::NAME, Self::VERSION);
 
         let transport = Arc::new(SharedTransport::default());
-        let params = Arc::new(SkollParams::default());
+        let params = Arc::new(SkollParams::new(instance));
         Self {
             instance,
             _worker: Worker::spawn(instance, transport.clone(), params.clone(), Config::load),
@@ -172,13 +179,13 @@ mod tests {
     #[test]
     fn video_path_round_trips_through_saved_state() {
         let params = SkollParams::default();
-        *params.video_path.write().unwrap() = Some("/videos/cue 3.mov".to_owned());
+        *params.video_path.path.write().unwrap() = Some("/videos/cue 3.mov".to_owned());
         let saved = params.serialize_fields();
 
         let restored = SkollParams::default();
         restored.deserialize_fields(&saved);
         assert_eq!(
-            restored.video_path.read().unwrap().as_deref(),
+            restored.video_path.path.read().unwrap().as_deref(),
             Some("/videos/cue 3.mov")
         );
     }

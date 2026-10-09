@@ -4,6 +4,53 @@
 //! Whichever side changed last wins: a file opened in mpv is stored, and a stored path that
 //! changes, such as on project load, is loaded into mpv.
 
+use std::sync::RwLock;
+
+use nih_plug::params::persist::PersistentField;
+
+use crate::log;
+
+/// The stored video path: plugin state, saved with the project.
+///
+/// A plain `RwLock` would do, but this logs every save and restore, since the host decides when
+/// to ask for the state and nothing else shows it.
+pub struct StoredPath {
+    instance: u32,
+    pub path: RwLock<Option<String>>,
+}
+
+impl StoredPath {
+    pub fn new(instance: u32) -> Self {
+        Self {
+            instance,
+            path: RwLock::new(None),
+        }
+    }
+}
+
+impl PersistentField<'_, Option<String>> for StoredPath {
+    /// Called when the host restores the plugin's state.
+    fn set(&self, new_value: Option<String>) {
+        log!(self.instance, "state restored, video: {new_value:?}");
+        if let Ok(mut path) = self.path.write() {
+            *path = new_value;
+        }
+    }
+
+    /// Called when the host saves the plugin's state.
+    fn map<F, R>(&self, f: F) -> R
+    where
+        F: Fn(&Option<String>) -> R,
+    {
+        let path = self
+            .path
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        log!(self.instance, "state saved, video: {:?}", *path);
+        f(&path)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathAction {
     /// mpv opened a new file: store its path.
