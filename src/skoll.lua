@@ -15,6 +15,11 @@ local function open_dialog()
     mp.command_native_async({
         name = "subprocess",
         args = {
+            -- GTK 4 normally hands file dialogs to the desktop portal, which draws them on the
+            -- host desktop. In the nested setup that window lands on Hyprland, takes focus and
+            -- drops Bitwig's display out of fullscreen. Without portals, GTK draws the dialog
+            -- itself, on mpv's own display.
+            "env", "GDK_DEBUG=no-portals",
             zenity, "--file-selection", "--title=Open video in Skoll",
             "--file-filter=Videos | *.mp4 *.m4v *.mov *.mkv *.webm *.avi *.mxf *.mpg *.mpeg *.ts *.MP4 *.MOV *.MKV",
             "--file-filter=All files | *",
@@ -24,7 +29,8 @@ local function open_dialog()
         playback_only = false,
     }, function(success, result)
         dialog_open = false
-        if not success or result.error_string == "init" then
+        -- env exits with 127 when it cannot find zenity.
+        if not success or result.error_string == "init" or result.status == 127 then
             mp.osd_message("Could not run " .. zenity .. ". Install zenity to open videos.", 10)
             return
         end
