@@ -11,10 +11,7 @@ use nih_plug::params::persist::PersistentField;
 
 use crate::log;
 
-/// The stored video path: plugin state, saved with the project.
-///
-/// A plain `RwLock` would do, but this logs every save and restore, since the host decides when
-/// to ask for the state and nothing else shows it.
+/// The stored video path: plugin state, saved with the project. Logs each restore.
 pub struct StoredPath {
     instance: u32,
     pub path: RwLock<Option<String>>,
@@ -47,12 +44,10 @@ impl PersistentField<'_, Option<String>> for StoredPath {
     where
         F: Fn(&Option<String>) -> R,
     {
-        let path = self
+        f(&self
             .path
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        log!(self.instance, "state saved, video: {:?}", *path);
-        f(&path)
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 }
 
