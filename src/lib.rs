@@ -141,6 +141,10 @@ impl Plugin for Skoll {
             std::time::Instant::now(),
             transport.sample_rate,
         );
+        if self.params.video_path.dirty.swap(false, Ordering::Relaxed) {
+            // Queues a task for the main thread: no allocation, no locks.
+            context.mark_state_dirty();
+        }
         ProcessStatus::Normal
     }
 

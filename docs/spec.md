@@ -34,7 +34,7 @@ Only the default mpv flags are tuned for the nested X11 case.
 ### Settled
 
 - **Architecture.** Split design. The plugin sends transport to an external mpv process.
-- **Framework.** nih-plug (Rust).
+- **Framework.** nih-plug (Rust), from the fork `github.com/liminalfield/nih-plug`, branch `skoll`. The fork adds `ProcessContext::mark_state_dirty()` (CLAP only).
 - **Formats.** CLAP and VST3 from one codebase. Bitwig testing uses the CLAP build.
 - **No custom editor.** The host's generic parameter panel is the only plugin UI.
 - **Distribution.** Open source. Not for sale.
@@ -83,6 +83,8 @@ If video time is past the end, mpv holds the last frame (`--keep-open`).
 
 - The video file path. It is plugin state, not a parameter.
 - The path is saved with the Bitwig project and restored on load.
+- Bitwig reads a plugin's state again only after a parameter change or a CLAP `mark_dirty()` call. A new video path changes no parameter, so the plugin calls `mark_dirty()`: the background thread sets a flag, and `process()` calls `mark_state_dirty()`, which nih-plug forwards on the main thread. Upstream nih-plug cannot do this, hence the fork.
+- VST3 has no equivalent in nih-plug's bindings (`IComponentHandler2::setDirty`). In the VST3 build, a new video is saved only after some parameter change.
 
 ### Threading
 

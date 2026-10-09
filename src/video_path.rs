@@ -4,6 +4,7 @@
 //! Whichever side changed last wins: a file opened in mpv is stored, and a stored path that
 //! changes, such as on project load, is loaded into mpv.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::RwLock;
 
 use nih_plug::params::persist::PersistentField;
@@ -17,6 +18,9 @@ use crate::log;
 pub struct StoredPath {
     instance: u32,
     pub path: RwLock<Option<String>>,
+    /// Set when the path changes. `process()` clears it and tells the host to save the state:
+    /// unlike a parameter change, the host can't see this change otherwise.
+    pub dirty: AtomicBool,
 }
 
 impl StoredPath {
@@ -24,6 +28,7 @@ impl StoredPath {
         Self {
             instance,
             path: RwLock::new(None),
+            dirty: AtomicBool::new(false),
         }
     }
 }

@@ -146,6 +146,7 @@ fn sync_video_path(instance: u32, mpv: &mut Mpv, path_sync: &mut PathSync, param
             if let Ok(mut stored) = params.video_path.path.write() {
                 *stored = Some(path);
             }
+            params.video_path.dirty.store(true, Ordering::Relaxed);
         }
         Some(PathAction::Load(path)) => {
             if std::path::Path::new(&path).is_file() {
