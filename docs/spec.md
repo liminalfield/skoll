@@ -270,8 +270,11 @@ Done when: a reopened project shows the same video at the same frame with no use
 
 - The Show Video parameter hides and shows the window.
 - The README is written (see section 12).
+- Offset gets fine control: a range skewed towards 0, so the middle of the knob sweeps fractions of a second and the ends reach ±1 hour. Small values display in milliseconds (`-250 ms`), larger ones as `M:SS.mmm`. Typed values accept `250ms`, `1.5` (seconds) and `1:02.5`.
+- No seek when the frame to show would not change, for example while turning Offset with the video time below 0.
+- The file dialog falls back from zenity to kdialog, then yad. A `file_dialog` config setting can name another program that prints the chosen path.
 
-Done when: Show Video can be mapped to a key in Bitwig and toggles the window.
+Done when: Show Video can be mapped to a key in Bitwig and toggles the window, and Offset can be set to the nearest 10 ms by dragging.
 
 ## 11. Known risks
 
