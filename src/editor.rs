@@ -128,6 +128,7 @@ impl Editor for SkollEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nih_plug::prelude::Params;
 
     #[test]
     fn remembers_the_size_the_host_sets() {
