@@ -1,15 +1,14 @@
 # Skoll
 
 Skoll keeps a video in sync with Bitwig's transport, for scoring to picture on Linux.
-It is a CLAP and VST3 audio effect that drives an [mpv](https://mpv.io) window: play, stop, loop or scrub in Bitwig, and the picture follows to the frame.
+It is a CLAP and VST3 audio effect whose plugin window shows the video: play, stop, loop or scrub in Bitwig, and the picture follows to the frame.
 
-Skoll does not decode or draw video itself. mpv owns the window, the decoding and the display, and Skoll controls it over mpv's IPC socket. Audio passes through the plugin unchanged.
+Skoll does not decode or draw video itself. [mpv](https://mpv.io) draws inside the plugin window and does the decoding, and Skoll controls it over mpv's IPC socket. Audio passes through the plugin unchanged.
 
 Skoll does not:
 
 - play the video's soundtrack,
 - render the finished score to a video file,
-- embed the picture in the plugin or offer a plugin editor,
 - run on Windows or macOS.
 
 ## Install
@@ -43,77 +42,38 @@ Use the CLAP build. In the VST3 build, opening a new video does not mark the pro
 
 ## Use
 
-Add Skoll to any track; the master track works well. An mpv window opens.
-Right-click the window, or press `O` in it, and choose a video. The picture jumps to the playhead.
+Add Skoll to any track; the master track works well. Open its plugin window with the window button in the device's left column, as for any plugin with an editor.
+Right-click the video, and choose a file. The picture jumps to the playhead.
+
+Closing the plugin window stops mpv; reopening it shows the same video at the playhead. To keep the window above Bitwig, use Bitwig's pin button in the plugin window's title bar. The window is 640 × 360 for now.
 
 | Parameter | What it does |
 | --- | --- |
 | Offset | The song time at which the video's first frame appears. Before that, mpv holds the first frame. Type `250ms`, `1.5` (seconds) or `1:02.5`. |
 | Nudge | A fine trim of ±1000 ms, added to Offset. |
-| Show Video | Off closes the window; on reopens it with the same video at the playhead. Map it to a key to toggle the picture. |
 
-Move the window with a left-drag, or with Alt + left-drag under Openbox. Resize it with Alt + right-drag, or with mpv's `Alt+0`, `Alt+1` and `Alt+2` (half, native and double size). Skoll notes where the window is, and puts it back there when the window reopens.
-
-The project saves the video path, Offset, Nudge and the window's place. Reopening the project reloads the video at the right frame. If the video has moved, mpv stays empty and the log says so.
-
-Dragging a file onto the mpv window also loads it, but only from a file manager running on the same display as mpv.
+The project saves the video path, Offset and Nudge. Reopening the project reloads the video at the right frame. If the video has moved, the window stays empty and the log says so.
 
 ## Configuration
 
-Skoll reads `$XDG_CONFIG_HOME/skoll/config.toml` (usually `~/.config/skoll/config.toml`) each time it starts mpv. To apply a change, close the mpv window: Skoll reopens it within a second. Without the file, Skoll uses the defaults below.
+Skoll reads `$XDG_CONFIG_HOME/skoll/config.toml` (usually `~/.config/skoll/config.toml`) each time it starts mpv. To apply a change, close and reopen the plugin window. Without the file, Skoll uses the defaults below.
 
 ```toml
 # The mpv binary. Default: mpv on PATH.
 mpv_path = "/usr/bin/mpv"
 
-# Replaces the default window flags.
-window_flags = [
-    "--gpu-context=x11egl",
-    "--ontop",
-    "--no-border",
-    "--geometry=480x270-0+0",
-]
-
-# Added after the window flags.
+# Added after Skoll's own flags.
 extra_flags = ["--osd-level=1"]
 
 # A file dialog that prints the chosen path. Default: zenity, then kdialog, then yad.
 file_dialog = ["zenity", "--file-selection"]
 ```
 
-The default window flags open a 480 × 270 borderless window in the top right corner, above other windows. Once you move or resize the window, Skoll remembers that place instead, per project. `--gpu-context=x11egl` forces an X11 window, so mpv opens in the same X display as Bitwig even when `WAYLAND_DISPLAY` is set.
+Skoll always passes these flags, which the config cannot remove: `--idle=yes --force-window=yes --keep-open=yes --no-audio --hr-seek=yes --pause --no-terminal --gpu-context=x11egl --no-window-dragging`, `--wid` with the plugin window, the IPC socket, and the Open Video script. An older config's `window_flags` is ignored.
 
-Skoll always adds these flags, which the config cannot remove: `--idle=yes --force-window=yes --keep-open=yes --no-audio --hr-seek=yes --pause --no-terminal`, the IPC socket, and the Open Video script.
+## Display notes
 
-## Window placement
-
-**Bitwig nested in a rootful Xwayland, with Openbox.** If the mpv window falls behind Bitwig, add this to the `<applications>` section of `~/.config/openbox/rc.xml`:
-
-```xml
-<application class="mpv">
-  <layer>above</layer>
-  <decor>no</decor>
-  <focus>no</focus>
-</application>
-```
-
-If picom causes tearing or dropped frames in the video, exclude windows of class `mpv` from compositing in picom's config.
-
-**Plain X11.** The default flags work with most window managers. If yours ignores `--ontop`, give it a keep-above rule for class `mpv`.
-
-**Hyprland, with Bitwig running directly on it.** mpv opens through Xwayland because of `--gpu-context=x11egl`, so Hyprland tiles it. Float and pin it with a window rule. In Hyprland's Lua config:
-
-```lua
-hl.window_rule({
-    name  = "skoll-video",
-    match = { class = "^mpv$" },
-    float = true,
-    pin   = true,
-    size  = "480 270",
-    keep_aspect_ratio = true,
-    no_initial_focus  = true,
-})
-```
+If picom causes tearing or dropped frames in the video, exclude Bitwig's plugin windows, or the mpv window inside them (class `mpv`), from compositing in picom's config.
 
 ## Proxies
 
@@ -135,7 +95,8 @@ ffmpeg -i cut.mp4 -an -c:v prores_ks -profile:v 0 cut-proxy.mov
 - **Slow seeks.** Long-GOP files lag on loops and scrubbing. Use a proxy.
 - **No soundtrack.** mpv plays the picture only. Import the video's audio into Bitwig to hear it.
 - **VST3.** Opening a new video does not mark the project as changed. Save after changing any parameter, or use the CLAP build.
-- **Fullscreen.** mpv's fullscreen fills the X display it runs in. In a nested setup that is the nested display, not the monitor.
+- **Window size.** The plugin window is 640 × 360 and cannot be resized yet.
+- **X11 only.** mpv draws into the plugin window through X11. Bitwig on Linux is an X11 application, so this holds under Wayland desktops too.
 
 ## Troubleshooting
 

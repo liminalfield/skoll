@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 mod config;
+mod editor;
 mod host_link;
 pub mod log;
 mod mpv;
@@ -13,13 +14,12 @@ mod sync;
 mod time_text;
 mod transport;
 mod video_path;
-mod window;
 mod worker;
 
 use config::Config;
+use editor::{EmbedTarget, SkollEditor};
 use transport::SharedTransport;
 use video_path::StoredPath;
-use window::StoredWindow;
 use worker::Worker;
 
 /// Numbers plugin instances within one host process, so their log lines can be told apart.
@@ -29,6 +29,7 @@ pub struct Skoll {
     params: Arc<SkollParams>,
     instance: u32,
     transport: Arc<SharedTransport>,
+    embed_target: Arc<EmbedTarget>,
     _worker: Worker,
 }
 
@@ -42,17 +43,9 @@ pub(crate) struct SkollParams {
     #[id = "nudge"]
     pub nudge: FloatParam,
 
-    /// Off quits mpv; on relaunches it with the video.
-    #[id = "show"]
-    pub show_video: BoolParam,
-
     /// The video file. Plugin state, not a parameter: saved with the project.
     #[persist = "video-path"]
     pub video_path: StoredPath,
-
-    /// Where the mpv window was last seen. Plugin state, saved with the project.
-    #[persist = "window"]
-    pub window: StoredWindow,
 }
 
 impl Default for SkollParams {
@@ -94,9 +87,7 @@ impl SkollParams {
             )
             .with_unit(" ms")
             .with_step_size(1.0),
-            show_video: BoolParam::new("Show Video", true),
             video_path: StoredPath::new(instance),
-            window: StoredWindow::default(),
         }
     }
 }
@@ -108,11 +99,19 @@ impl Default for Skoll {
 
         let transport = Arc::new(SharedTransport::default());
         let params = Arc::new(SkollParams::new(instance));
+        let embed_target = Arc::new(EmbedTarget::default());
         Self {
             instance,
-            _worker: Worker::spawn(instance, transport.clone(), params.clone(), Config::load),
+            _worker: Worker::spawn(
+                instance,
+                transport.clone(),
+                params.clone(),
+                embed_target.clone(),
+                Config::load,
+            ),
             params,
             transport,
+            embed_target,
         }
     }
 }
@@ -144,6 +143,13 @@ impl Plugin for Skoll {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        Some(Box::new(SkollEditor::new(
+            self.instance,
+            self.embed_target.clone(),
+        )))
     }
 
     fn initialize(

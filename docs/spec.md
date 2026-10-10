@@ -76,7 +76,7 @@ Install before the first Claude Code session:
 | Parameter | Type | Range | Meaning |
 |---|---|---|---|
 | Offset | float, seconds | -3600 to 3600 | The song time at which the video's first frame appears. |
-| Show Video | bool | off, on | Shows or hides the mpv window. |
+| Nudge | float, ms | -1000 to 1000 | Added to Offset, for fine adjustment. |
 
 Video time is `song position in seconds - Offset`.
 If video time is negative, mpv pauses on the first frame.
@@ -146,13 +146,11 @@ Default flags:
 - A missing file means the defaults above.
 - Changing the file must not need a rebuild. Reading it once at launch is enough.
 
-### Window placement
+### Window
 
-- Every 250 ms the background thread reads the mpv window's position and size from the X server, using mpv's `window-id` property. mpv itself does not report its position.
-- The position is corrected for the window manager's frame (`_NET_FRAME_EXTENTS`), since `--geometry` places the frame.
-- The latest geometry is plugin state (`window`), saved with the project without marking it dirty. A relaunched mpv gets it as `--geometry=WxH+X+Y`, after the configured window flags.
-- Negative positions are clamped to 0, because in `--geometry` a negative number counts from the right or bottom edge.
-- Only X11 windows are tracked. On Wayland a client cannot learn its own position.
+- From milestone 7, mpv draws in the host's plugin window: `--wid=<X11 window>`, with `--gpu-context=x11egl` and `--no-window-dragging`. mpv makes its own child window and keeps it covering the parent.
+- The editor opens at 640 × 360 until milestone 8 makes it resizable.
+- Milestone 6's own-window design (`--ontop --no-border --geometry`, position tracking through the X server, Show Video) was removed.
 
 ### Socket
 
@@ -191,7 +189,7 @@ Claude Code should verify each command against the current mpv manual.
 ### Failure handling
 
 - If mpv is not installed, the plugin logs the fact and keeps passing audio.
-- If mpv exits or the user closes its window, the background thread relaunches mpv while Show Video is on.
+- If mpv exits while the plugin window is open, the background thread relaunches it, with backoff. Closing the plugin window quits mpv (milestone 7; before that, Show Video did).
 - When the plugin instance is destroyed, the plugin sends `quit`, waits briefly, kills the process if needed, and deletes the socket.
 
 ## 7. Sync rules

@@ -13,12 +13,12 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::config::Config;
+use crate::editor::EmbedTarget;
 use crate::host_link::HostLink;
 use crate::mpv::{self, Mpv};
 use crate::sync::{Action, Sync};
 use crate::transport::{format_time, SharedTransport, TransportSnapshot};
 use crate::video_path::{PathAction, PathSync};
-use crate::window::{WindowGeometry, WindowTracker};
 use crate::{log, paths, SkollParams};
 
 const WAKE_RATE_HZ: u32 = 60;
@@ -26,7 +26,7 @@ const WAKE_RATE_HZ: u32 = 60;
 /// The relaunch delay after mpv exits. It doubles while mpv keeps exiting soon after launch.
 const MIN_RELAUNCH_DELAY: Duration = Duration::from_secs(1);
 const MAX_RELAUNCH_DELAY: Duration = Duration::from_secs(30);
-/// mpv running at least this long counts as a normal exit, such as the user closing the window.
+/// mpv running at least this long counts as a normal exit rather than a crash loop.
 const STABLE_UPTIME: Duration = Duration::from_secs(10);
 
 /// Reads the config. A parameter so tests can avoid opening an mpv window.
@@ -43,6 +43,7 @@ impl Worker {
         instance: u32,
         transport: Arc<SharedTransport>,
         params: Arc<SkollParams>,
+        embed_target: Arc<EmbedTarget>,
         load_config: ConfigLoader,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -50,7 +51,16 @@ impl Worker {
             .name(format!("skoll-worker-{instance}"))
             .spawn({
                 let stop = stop.clone();
-                move || run(instance, &transport, &params, &stop, load_config)
+                move || {
+                    run(
+                        instance,
+                        &transport,
+                        &params,
+                        &embed_target,
+                        &stop,
+                        load_config,
+                    )
+                }
             });
 
         let handle = match handle {
@@ -77,14 +87,13 @@ fn run(
     instance: u32,
     transport: &SharedTransport,
     params: &SkollParams,
+    embed_target: &EmbedTarget,
     stop: &AtomicBool,
     load_config: ConfigLoader,
 ) {
     let mut supervisor = Supervisor::new(instance, load_config);
     let mut sync = Sync::default();
     let mut path_sync = PathSync::default();
-    let mut window = WindowTracker::new(instance);
-    let mut next_window_check = Instant::now();
     let mut synced_launch = 0;
     let mut was_playing = None;
     let mut process_watch = ProcessWatch::new(transport.load().blocks);
@@ -110,7 +119,7 @@ fn run(
             log!(instance, "{message} ({})", describe(&snapshot));
         }
 
-        supervisor.tick(now, params.show_video.value(), params.window.get());
+        supervisor.tick(now, embed_target.window());
         if supervisor.launches != synced_launch {
             sync.reset_mpv();
             path_sync.reset_mpv();
@@ -118,14 +127,6 @@ fn run(
         }
         if let Some(mpv) = supervisor.connected_mpv() {
             sync_video_path(instance, mpv, &mut path_sync, params);
-            if now >= next_window_check {
-                next_window_check = now + WINDOW_CHECK_INTERVAL;
-                if let Some(geometry) = mpv.state().window_id.and_then(|id| window.geometry(id)) {
-                    if params.window.get() != Some(geometry) {
-                        params.window.remember(geometry);
-                    }
-                }
-            }
             let offset = params.total_offset();
             for action in sync.tick(now, &snapshot, offset, mpv.state()) {
                 apply(instance, mpv, &mut sync, &snapshot, offset, &action);
@@ -170,9 +171,6 @@ fn sync_video_path(instance: u32, mpv: &mut Mpv, path_sync: &mut PathSync, param
         None => {}
     }
 }
-
-/// How often to note where the mpv window is, so a relaunch puts it back there.
-const WINDOW_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How long a drift check waits for mpv's reply.
 const TIME_POS_TIMEOUT: Duration = Duration::from_millis(50);
@@ -256,12 +254,8 @@ impl ProcessWatch {
     }
 }
 
-/// How long after the plugin is created before mpv first launches. The host restores the plugin
-/// state just after creating it, and Show Video may be off: don't flash a window first.
-const FIRST_LAUNCH_DELAY: Duration = Duration::from_millis(150);
-
-/// Keeps one mpv process running while Show Video is on. Dropping it quits mpv and deletes the
-/// socket.
+/// Keeps one mpv process drawing in the plugin window while the host has it open. Dropping it
+/// quits mpv and deletes the socket.
 struct Supervisor {
     instance: u32,
     load_config: ConfigLoader,
@@ -273,7 +267,8 @@ struct Supervisor {
     gave_up: bool,
     /// Counts successful launches, so the sync state can be reset for a new mpv.
     launches: u64,
-    showing: bool,
+    /// The plugin window mpv draws in, or `None` while the host has it closed.
+    window: Option<u32>,
 }
 
 impl Supervisor {
@@ -287,11 +282,11 @@ impl Supervisor {
             load_config,
             socket,
             mpv: None,
-            next_launch: Instant::now() + FIRST_LAUNCH_DELAY,
+            next_launch: Instant::now(),
             relaunch_delay: MIN_RELAUNCH_DELAY,
             gave_up: false,
             launches: 0,
-            showing: true,
+            window: None,
         }
     }
 
@@ -300,20 +295,17 @@ impl Supervisor {
         self.mpv.as_mut().filter(|mpv| mpv.is_connected())
     }
 
-    fn tick(&mut self, now: Instant, show: bool, geometry: Option<WindowGeometry>) {
-        if show != self.showing {
-            self.showing = show;
-            if show {
-                log!(self.instance, "Show Video on");
-                self.next_launch = self.next_launch.min(now);
-                self.relaunch_delay = MIN_RELAUNCH_DELAY;
-            } else {
-                log!(self.instance, "Show Video off, closing mpv");
-                // Dropping quits mpv and deletes the socket.
-                self.mpv = None;
-            }
+    /// `window` is the host's plugin window, or `None` while it is closed.
+    fn tick(&mut self, now: Instant, window: Option<u32>) {
+        if window != self.window {
+            self.window = window;
+            // A new window needs a new mpv: --wid is fixed at launch. Dropping quits mpv and
+            // deletes the socket.
+            self.mpv = None;
+            self.next_launch = now;
+            self.relaunch_delay = MIN_RELAUNCH_DELAY;
         }
-        if !show {
+        if window.is_none() {
             return;
         }
 
@@ -338,7 +330,7 @@ impl Supervisor {
             return;
         }
         let config = (self.load_config)(self.instance);
-        let args = config.mpv_args(&self.socket, geometry);
+        let args = config.mpv_args(&self.socket, window);
         let prelude = config.script_prelude();
         match Mpv::launch(
             self.instance,
@@ -470,7 +462,7 @@ mod tests {
         }
         let socket = paths::socket_path();
         let mut args: Vec<String> = Config {
-            window_flags: Some(vec!["--vo=null".to_owned()]),
+            extra_flags: vec!["--vo=null".to_owned()],
             ..Config::default()
         }
         .mpv_args(&socket, None);
@@ -566,23 +558,29 @@ mod tests {
 
     fn headless_mpv(_: u32) -> Config {
         Config {
-            window_flags: Some(vec!["--vo=null".to_owned()]),
+            extra_flags: vec!["--vo=null".to_owned()],
             ..Config::default()
         }
     }
 
     /// Ticks until `done`, or panics after 5 s.
-    fn tick_until(supervisor: &mut Supervisor, show: bool, done: impl Fn(&mut Supervisor) -> bool) {
+    fn tick_until(
+        supervisor: &mut Supervisor,
+        window: Option<u32>,
+        done: impl Fn(&mut Supervisor) -> bool,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !done(supervisor) {
             assert!(Instant::now() < deadline, "timed out");
-            supervisor.tick(Instant::now(), show, None);
+            supervisor.tick(Instant::now(), window);
             thread::sleep(Duration::from_millis(16));
         }
     }
 
+    /// mpv runs while the plugin window is open. A window ID the null video output ignores
+    /// stands in for the host's window.
     #[test]
-    fn show_video_quits_and_relaunches_mpv() {
+    fn plugin_window_starts_and_stops_mpv() {
         if std::process::Command::new("mpv")
             .arg("--version")
             .output()
@@ -591,24 +589,26 @@ mod tests {
             return;
         }
         let mut supervisor = Supervisor::new(0, headless_mpv);
-        tick_until(&mut supervisor, true, |s| s.connected_mpv().is_some());
-        assert_eq!(supervisor.launches, 1);
-        assert!(supervisor.socket.exists());
-
-        supervisor.tick(Instant::now(), false, None);
-        assert!(supervisor.mpv.is_none());
-        assert!(!supervisor.socket.exists());
-        // Stays closed while off.
+        // Closed: no mpv.
         for _ in 0..5 {
-            supervisor.tick(Instant::now(), false, None);
+            supervisor.tick(Instant::now(), None);
         }
         assert!(supervisor.mpv.is_none());
 
-        // On again: relaunched straight away, not after the relaunch delay.
-        supervisor.tick(Instant::now(), true, None);
+        tick_until(&mut supervisor, Some(7), |s| s.connected_mpv().is_some());
+        assert_eq!(supervisor.launches, 1);
+        assert!(supervisor.socket.exists());
+
+        // The host closes the window: mpv quits and its socket goes.
+        supervisor.tick(Instant::now(), None);
+        assert!(supervisor.mpv.is_none());
+        assert!(!supervisor.socket.exists());
+
+        // Reopened, possibly as a new window: a new mpv straight away.
+        supervisor.tick(Instant::now(), Some(8));
         assert!(supervisor.mpv.is_some());
         assert_eq!(supervisor.launches, 2);
-        tick_until(&mut supervisor, true, |s| s.connected_mpv().is_some());
+        tick_until(&mut supervisor, Some(8), |s| s.connected_mpv().is_some());
     }
 
     fn missing_mpv(_: u32) -> Config {
@@ -624,6 +624,7 @@ mod tests {
             0,
             Arc::new(SharedTransport::default()),
             Arc::new(SkollParams::default()),
+            Arc::new(EmbedTarget::default()),
             missing_mpv,
         );
         let start = Instant::now();

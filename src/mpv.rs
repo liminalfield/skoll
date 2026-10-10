@@ -27,7 +27,6 @@ const OBSERVE_PAUSE: u64 = 2;
 const OBSERVE_EOF_REACHED: u64 = 3;
 const OBSERVE_SEEKABLE: u64 = 4;
 const OBSERVE_FPS: u64 = 5;
-const OBSERVE_WINDOW_ID: u64 = 6;
 /// Request IDs for queries. Commands without an ID get replies with ID 0.
 const FIRST_REQUEST_ID: u64 = 1000;
 
@@ -53,8 +52,6 @@ pub struct MpvState {
     pub eof_reached: bool,
     /// The file's frame rate (`container-fps`), when known.
     pub fps: Option<f64>,
-    /// mpv's X11 window, once it is open. None on other video outputs.
-    pub window_id: Option<u32>,
 }
 
 /// One `time-pos` reading, with when the query was sent and the reply arrived.
@@ -250,9 +247,6 @@ impl Mpv {
                 self.send(&json!({
                     "command": ["observe_property", OBSERVE_FPS, "container-fps"]
                 }));
-                self.send(&json!({
-                    "command": ["observe_property", OBSERVE_WINDOW_ID, "window-id"]
-                }));
             }
             Err(err) => {
                 if !self.warned_no_socket && self.launched.elapsed() > CONNECT_WARN_AFTER {
@@ -429,12 +423,6 @@ fn apply_event(state: &mut MpvState, event: &str, message: &Value) {
     match message.get("id").and_then(Value::as_u64) {
         Some(OBSERVE_PAUSE) => state.paused = data,
         Some(OBSERVE_EOF_REACHED) => state.eof_reached = data.unwrap_or(false),
-        Some(OBSERVE_WINDOW_ID) => {
-            state.window_id = message
-                .get("data")
-                .and_then(Value::as_u64)
-                .and_then(|id| u32::try_from(id).ok())
-        }
         Some(OBSERVE_FPS) => {
             state.fps = message
                 .get("data")
@@ -572,7 +560,6 @@ mod tests {
                 paused: Some(true),
                 eof_reached: false,
                 fps: None,
-                window_id: None,
             }
         );
 

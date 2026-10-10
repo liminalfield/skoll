@@ -258,7 +258,6 @@ mod tests {
             paused: Some(paused),
             eof_reached: false,
             fps: Some(24.0),
-            window_id: None,
         }
     }
 
