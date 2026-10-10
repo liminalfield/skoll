@@ -78,7 +78,7 @@ Install before the first Claude Code session:
 | Offset | float, seconds | -3600 to 3600 | The song time at which the video's first frame appears. |
 | Nudge | float, ms | -1000 to 1000 | Added to Offset, for fine adjustment. |
 
-Video time is `song position in seconds - Offset`.
+Video time is `song position in seconds - (Offset + Nudge / 1000)`.
 If video time is negative, mpv pauses on the first frame.
 If video time is past the end, mpv holds the last frame (`--keep-open`).
 
