@@ -36,7 +36,7 @@ Only the default mpv flags are tuned for the nested X11 case.
 - **Architecture.** Split design. The plugin sends transport to an external mpv process.
 - **Framework.** nih-plug (Rust), from the fork `github.com/liminalfield/nih-plug`, branch `skoll`. The fork adds `ProcessContext::mark_state_dirty()` (CLAP only).
 - **Formats.** CLAP and VST3 from one codebase. Bitwig testing uses the CLAP build.
-- **No custom editor.** The host's generic parameter panel is the only plugin UI.
+- **Editor.** From milestone 7 the plugin window is the video: mpv draws inside the window the host opens for the plugin's editor (`--wid`). There are no controls in it; the host's generic parameter panel holds the parameters. Before milestone 7 there was no editor, and mpv had its own window.
 - **Distribution.** Open source. Not for sale.
 - **Name.** Skoll. The crate, config directory and socket prefix use `skoll`. The CLAP ID is `com.liminalfield.skoll`.
 - **Licence.** GPLv3, because nih-plug's VST3 export uses GPLv3 bindings.
@@ -45,7 +45,6 @@ Only the default mpv flags are tuned for the nested X11 case.
 
 ### Out of scope for version 1
 
-- A video window embedded in the plugin editor.
 - Playing the video's own soundtrack through the plugin.
 - Rendering the finished score to a video file.
 - A file picker in a plugin editor. Videos are opened from the mpv window instead (section 6).
@@ -289,6 +288,28 @@ Done when: a reopened project shows the same video at the same frame with no use
 - The file dialog falls back from zenity to kdialog, then yad. A `file_dialog` config setting can name another program that prints the chosen path.
 
 Done when: Show Video can be mapped to a key in Bitwig and toggles the window, and Offset can be set to the nearest 10 ms by dragging.
+
+### Milestone 7: Video in the plugin window
+
+Without an editor, Bitwig shows no window button on the device, and closing mpv's own window only made Skoll reopen it.
+
+- The plugin has an editor (nih-plug `Editor`) with no toolkit and no controls. Bitwig shows its window button on the device.
+- When the host opens the editor, Skoll launches mpv with `--wid=<the host's X11 window>`. mpv creates its own window inside it and always covers it fully. When the host closes the editor, Skoll quits mpv.
+- Reopening the editor reloads the stored video and seeks to the playhead, as a relaunch already does.
+- The editor has a fixed size, 640 × 360, until milestone 8.
+- Show Video, mpv's separate window and the window position tracking go: the host owns the window now. The config's `window_flags` goes too; `extra_flags` stays.
+- Right-click inside the video still opens the file dialog.
+- Only X11 parents are supported: a host on Windows or macOS would pass other handle types, and Skoll is Linux-only.
+
+Done when: the device's window button opens and closes the video in Bitwig's plugin window, the window's X closes it, and reopening shows the same video at the playhead.
+
+### Milestone 8: Resizable plugin window
+
+- Patch the nih-plug fork: the CLAP wrapper implements `can_resize`, `get_resize_hints`, `adjust_size` and `set_size` by asking the editor, which upstream leaves as TODOs. The `Editor` trait gets default methods so other editors are unaffected.
+- Skoll's editor accepts any size from 160 × 90 up. mpv follows the parent window by itself.
+- The last size is plugin state, saved with the project, and the editor opens at that size.
+
+Done when: dragging the plugin window's edge in Bitwig resizes the video, and the size survives closing the window and reloading the project.
 
 ## 11. Known risks
 
