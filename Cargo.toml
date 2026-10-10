@@ -16,8 +16,9 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 libc = "0.2.190"
 # nih-plug has no stable release. Pin the commit to avoid API drift. The liminalfield fork
-# adds ProcessContext::mark_state_dirty() (branch skoll), see docs/spec.md section 5.
-nih_plug = { git = "https://github.com/liminalfield/nih-plug.git", rev = "55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e", features = ["assert_process_allocs"] }
+# adds ProcessContext::mark_state_dirty() and host editor resizing (branch skoll), see
+# docs/spec.md.
+nih_plug = { git = "https://github.com/liminalfield/nih-plug.git", rev = "34a4d3aeacde478a017c7542f62dc590722526a3", features = ["assert_process_allocs"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = "1.1.7"

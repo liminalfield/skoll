@@ -149,7 +149,7 @@ Default flags:
 ### Window
 
 - From milestone 7, mpv draws in the host's plugin window: `--wid=<X11 window>`, with `--gpu-context=x11egl` and `--no-window-dragging`. mpv makes its own child window and keeps it covering the parent.
-- The editor opens at 640 × 360 until milestone 8 makes it resizable.
+- The editor opens at 640 × 360, or at the size saved with the project (milestone 8).
 - Milestone 6's own-window design (`--ontop --no-border --geometry`, position tracking through the X server, Show Video) was removed.
 
 ### Socket
@@ -304,7 +304,7 @@ Done when: the device's window button opens and closes the video in Bitwig's plu
 ### Milestone 8: Resizable plugin window
 
 - Patch the nih-plug fork: the CLAP wrapper implements `can_resize`, `get_resize_hints`, `adjust_size` and `set_size` by asking the editor, which upstream leaves as TODOs. The `Editor` trait gets default methods so other editors are unaffected.
-- Skoll's editor accepts any size from 160 × 90 up. mpv follows the parent window by itself.
+- Skoll's editor accepts any non-zero size. mpv follows the parent window by itself.
 - The last size is plugin state, saved with the project, and the editor opens at that size.
 
 Done when: dragging the plugin window's edge in Bitwig resizes the video, and the size survives closing the window and reloading the project.

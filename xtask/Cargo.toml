@@ -5,4 +5,4 @@ edition = "2021"
 publish = false
 
 [dependencies]
-nih_plug_xtask = { git = "https://github.com/liminalfield/nih-plug.git", rev = "55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e" }
+nih_plug_xtask = { git = "https://github.com/liminalfield/nih-plug.git", rev = "34a4d3aeacde478a017c7542f62dc590722526a3" }

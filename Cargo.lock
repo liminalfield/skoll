@@ -331,7 +331,7 @@ dependencies = [
 [[package]]
 name = "nih_plug"
 version = "0.0.0"
-source = "git+https://github.com/liminalfield/nih-plug.git?rev=55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e#55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e"
+source = "git+https://github.com/liminalfield/nih-plug.git?rev=34a4d3aeacde478a017c7542f62dc590722526a3#34a4d3aeacde478a017c7542f62dc590722526a3"
 dependencies = [
  "anyhow",
  "anymap3",
@@ -362,7 +362,7 @@ dependencies = [
 [[package]]
 name = "nih_plug_derive"
 version = "0.1.0"
-source = "git+https://github.com/liminalfield/nih-plug.git?rev=55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e#55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e"
+source = "git+https://github.com/liminalfield/nih-plug.git?rev=34a4d3aeacde478a017c7542f62dc590722526a3#34a4d3aeacde478a017c7542f62dc590722526a3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -372,7 +372,7 @@ dependencies = [
 [[package]]
 name = "nih_plug_xtask"
 version = "0.1.0"
-source = "git+https://github.com/liminalfield/nih-plug.git?rev=55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e#55ad470d116e136d4dbe52d4a6d0a7dd5db88b3e"
+source = "git+https://github.com/liminalfield/nih-plug.git?rev=34a4d3aeacde478a017c7542f62dc590722526a3#34a4d3aeacde478a017c7542f62dc590722526a3"
 dependencies = [
  "anyhow",
  "cargo_metadata",

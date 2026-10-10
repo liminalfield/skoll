@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use nih_plug::prelude::{Editor, GuiContext, ParentWindowHandle};
 
-use crate::log;
+use crate::{log, SkollParams};
 
-/// The editor's size until it can be resized (milestone 8).
-const SIZE: (u32, u32) = (640, 360);
+/// The editor's size before the user first resizes it.
+pub const DEFAULT_SIZE: (u32, u32) = (640, 360);
 
 /// The X11 window mpv should draw in, shared with the background thread. 0 while the editor is
 /// closed.
@@ -32,11 +32,17 @@ impl EmbedTarget {
 pub struct SkollEditor {
     instance: u32,
     target: Arc<EmbedTarget>,
+    /// Holds the editor's size, which is saved with the project.
+    params: Arc<SkollParams>,
 }
 
 impl SkollEditor {
-    pub fn new(instance: u32, target: Arc<EmbedTarget>) -> Self {
-        Self { instance, target }
+    pub fn new(instance: u32, target: Arc<EmbedTarget>, params: Arc<SkollParams>) -> Self {
+        Self {
+            instance,
+            target,
+            params,
+        }
     }
 }
 
@@ -83,7 +89,28 @@ impl Editor for SkollEditor {
     }
 
     fn size(&self) -> (u32, u32) {
-        SIZE
+        *self
+            .params
+            .editor_size
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn can_resize(&self) -> bool {
+        true
+    }
+
+    /// The host resized the window. mpv follows the window by itself.
+    fn set_size(&self, width: u32, height: u32) -> bool {
+        if width == 0 || height == 0 {
+            return false;
+        }
+        *self
+            .params
+            .editor_size
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = (width, height);
+        true
     }
 
     fn set_scale_factor(&self, _factor: f32) -> bool {
@@ -101,6 +128,26 @@ impl Editor for SkollEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remembers_the_size_the_host_sets() {
+        let params = Arc::new(SkollParams::default());
+        let editor = SkollEditor::new(0, Arc::new(EmbedTarget::default()), params.clone());
+        assert!(editor.can_resize());
+        assert_eq!(editor.size(), DEFAULT_SIZE);
+
+        assert!(editor.set_size(1280, 720));
+        assert_eq!(editor.size(), (1280, 720));
+        assert!(!editor.set_size(0, 720));
+        assert_eq!(editor.size(), (1280, 720));
+
+        // The size is plugin state: it survives a save and restore.
+        let saved = params.serialize_fields();
+        let restored = Arc::new(SkollParams::default());
+        restored.deserialize_fields(&saved);
+        let editor = SkollEditor::new(0, Arc::new(EmbedTarget::default()), restored);
+        assert_eq!(editor.size(), (1280, 720));
+    }
 
     #[test]
     fn closing_clears_only_its_own_window() {

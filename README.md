@@ -45,14 +45,14 @@ Use the CLAP build. In the VST3 build, opening a new video does not mark the pro
 Add Skoll to any track; the master track works well. Open its plugin window with the window button in the device's left column, as for any plugin with an editor.
 Right-click the video, and choose a file. The picture jumps to the playhead.
 
-Closing the plugin window stops mpv; reopening it shows the same video at the playhead. To keep the window above Bitwig, use Bitwig's pin button in the plugin window's title bar. The window is 640 × 360 for now.
+Closing the plugin window stops mpv; reopening it shows the same video at the playhead. To keep the window above Bitwig, use Bitwig's pin button in the plugin window's title bar. Drag the window's edge to resize it; the project remembers the size.
 
 | Parameter | What it does |
 | --- | --- |
 | Offset | The song time at which the video's first frame appears. Before that, mpv holds the first frame. Type `250ms`, `1.5` (seconds) or `1:02.5`. |
 | Nudge | A fine trim of ±1000 ms, added to Offset. |
 
-The project saves the video path, Offset and Nudge. Reopening the project reloads the video at the right frame. If the video has moved, the window stays empty and the log says so.
+The project saves the video path, Offset, Nudge and the window size. Reopening the project reloads the video at the right frame. If the video has moved, the window stays empty and the log says so.
 
 ## Configuration
 
@@ -95,7 +95,6 @@ ffmpeg -i cut.mp4 -an -c:v prores_ks -profile:v 0 cut-proxy.mov
 - **Slow seeks.** Long-GOP files lag on loops and scrubbing. Use a proxy.
 - **No soundtrack.** mpv plays the picture only. Import the video's audio into Bitwig to hear it.
 - **VST3.** Opening a new video does not mark the project as changed. Save after changing any parameter, or use the CLAP build.
-- **Window size.** The plugin window is 640 × 360 and cannot be resized yet.
 - **X11 only.** mpv draws into the plugin window through X11. Bitwig on Linux is an X11 application, so this holds under Wayland desktops too.
 
 ## Troubleshooting
@@ -105,7 +104,7 @@ Skoll logs to `$XDG_STATE_HOME/skoll/plugin.log` (usually `~/.local/state/skoll/
 ## Development
 
 [docs/spec.md](docs/spec.md) holds the design, the sync rules and the milestones.
-Skoll builds against a fork of nih-plug, [liminalfield/nih-plug](https://github.com/liminalfield/nih-plug) (branch `skoll`), which adds the call that tells a CLAP host the plugin's state changed.
+Skoll builds against a fork of nih-plug, [liminalfield/nih-plug](https://github.com/liminalfield/nih-plug) (branch `skoll`), which adds the call that tells a CLAP host the plugin's state changed, and lets the host resize the plugin window.
 
 ```sh
 cargo test             # Includes tests against a windowless mpv when mpv is installed.

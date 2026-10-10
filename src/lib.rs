@@ -2,7 +2,7 @@
 
 use nih_plug::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 mod config;
 mod editor;
@@ -46,6 +46,10 @@ pub(crate) struct SkollParams {
     /// The video file. Plugin state, not a parameter: saved with the project.
     #[persist = "video-path"]
     pub video_path: StoredPath,
+
+    /// The plugin window's size in logical pixels. Plugin state, saved with the project.
+    #[persist = "editor-size"]
+    pub editor_size: RwLock<(u32, u32)>,
 }
 
 impl Default for SkollParams {
@@ -88,6 +92,7 @@ impl SkollParams {
             .with_unit(" ms")
             .with_step_size(1.0),
             video_path: StoredPath::new(instance),
+            editor_size: RwLock::new(editor::DEFAULT_SIZE),
         }
     }
 }
@@ -149,6 +154,7 @@ impl Plugin for Skoll {
         Some(Box::new(SkollEditor::new(
             self.instance,
             self.embed_target.clone(),
+            self.params.clone(),
         )))
     }
 
