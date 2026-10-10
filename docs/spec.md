@@ -306,6 +306,7 @@ Done when: the device's window button opens and closes the video in Bitwig's plu
 - Patch the nih-plug fork: the CLAP wrapper implements `can_resize`, `get_resize_hints`, `adjust_size` and `set_size` by asking the editor, which upstream leaves as TODOs. The `Editor` trait gets default methods so other editors are unaffected.
 - Skoll's editor accepts any non-zero size. mpv follows the parent window by itself.
 - The last size is plugin state, saved with the project, and the editor opens at that size.
+- Bitwig 6.1.3 resizes the plugin window without calling the plugin's `set_size()` (it calls it only with the opening size). So Skoll also observes mpv's `osd-dimensions`: mpv's window covers the plugin window, so its size in pixels, divided by the host's GUI scale, is the editor's logical size.
 
 Done when: dragging the plugin window's edge in Bitwig resizes the video, and the size survives closing the window and reloading the project.
 

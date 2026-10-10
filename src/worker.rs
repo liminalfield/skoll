@@ -127,6 +127,14 @@ fn run(
         }
         if let Some(mpv) = supervisor.connected_mpv() {
             sync_video_path(instance, mpv, &mut path_sync, params);
+            // Bitwig resizes the plugin window without telling the plugin. mpv's window covers
+            // it, so mpv's size is the window's: keep it for the next time the window opens.
+            if let Some(pixels) = mpv.state().window_size {
+                let size = embed_target.logical_size(pixels);
+                if let Ok(mut stored) = params.editor_size.write() {
+                    *stored = size;
+                }
+            }
             let offset = params.total_offset();
             for action in sync.tick(now, &snapshot, offset, mpv.state()) {
                 apply(instance, mpv, &mut sync, &snapshot, offset, &action);

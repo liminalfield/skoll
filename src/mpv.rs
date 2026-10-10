@@ -27,6 +27,7 @@ const OBSERVE_PAUSE: u64 = 2;
 const OBSERVE_EOF_REACHED: u64 = 3;
 const OBSERVE_SEEKABLE: u64 = 4;
 const OBSERVE_FPS: u64 = 5;
+const OBSERVE_OSD_DIMENSIONS: u64 = 6;
 /// Request IDs for queries. Commands without an ID get replies with ID 0.
 const FIRST_REQUEST_ID: u64 = 1000;
 
@@ -52,6 +53,9 @@ pub struct MpvState {
     pub eof_reached: bool,
     /// The file's frame rate (`container-fps`), when known.
     pub fps: Option<f64>,
+    /// The size of mpv's window in pixels. It covers the plugin window, so this is the plugin
+    /// window's size too.
+    pub window_size: Option<(u32, u32)>,
 }
 
 /// One `time-pos` reading, with when the query was sent and the reply arrived.
@@ -247,6 +251,9 @@ impl Mpv {
                 self.send(&json!({
                     "command": ["observe_property", OBSERVE_FPS, "container-fps"]
                 }));
+                self.send(&json!({
+                    "command": ["observe_property", OBSERVE_OSD_DIMENSIONS, "osd-dimensions"]
+                }));
             }
             Err(err) => {
                 if !self.warned_no_socket && self.launched.elapsed() > CONNECT_WARN_AFTER {
@@ -423,6 +430,17 @@ fn apply_event(state: &mut MpvState, event: &str, message: &Value) {
     match message.get("id").and_then(Value::as_u64) {
         Some(OBSERVE_PAUSE) => state.paused = data,
         Some(OBSERVE_EOF_REACHED) => state.eof_reached = data.unwrap_or(false),
+        Some(OBSERVE_OSD_DIMENSIONS) => {
+            let dimension = |key| {
+                message
+                    .get("data")
+                    .and_then(|data| data.get(key))
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .filter(|v| *v > 0)
+            };
+            state.window_size = dimension("w").zip(dimension("h"));
+        }
         Some(OBSERVE_FPS) => {
             state.fps = message
                 .get("data")
@@ -560,6 +578,7 @@ mod tests {
                 paused: Some(true),
                 eof_reached: false,
                 fps: None,
+                window_size: None,
             }
         );
 
@@ -629,6 +648,22 @@ mod tests {
         drop(mpv);
         fs::remove_file(&fake_zenity).unwrap();
         assert!(!script_path(&socket).exists());
+    }
+
+    #[test]
+    fn reads_the_window_size() {
+        let mut state = MpvState::default();
+        let (name, message) = event(
+            r#"{"event":"property-change","id":6,"name":"osd-dimensions","data":{"w":1280,"h":720,"par":1.0,"aspect":1.777,"mt":0,"mb":0,"ml":0,"mr":0}}"#,
+        );
+        apply_event(&mut state, &name, &message);
+        assert_eq!(state.window_size, Some((1280, 720)));
+
+        let (name, message) = event(
+            r#"{"event":"property-change","id":6,"name":"osd-dimensions","data":{"w":0,"h":0}}"#,
+        );
+        apply_event(&mut state, &name, &message);
+        assert_eq!(state.window_size, None);
     }
 
     #[test]

@@ -15,17 +15,36 @@ use crate::{log, SkollParams};
 /// The editor's size before the user first resizes it.
 pub const DEFAULT_SIZE: (u32, u32) = (640, 360);
 
-/// The X11 window mpv should draw in, shared with the background thread. 0 while the editor is
-/// closed.
-#[derive(Default)]
-pub struct EmbedTarget(AtomicU32);
+/// The X11 window mpv should draw in, shared with the background thread.
+pub struct EmbedTarget {
+    /// 0 while the editor is closed.
+    window: AtomicU32,
+    /// The host's GUI scale, as `f32` bits: window pixels per logical pixel.
+    scale: AtomicU32,
+}
+
+impl Default for EmbedTarget {
+    fn default() -> Self {
+        Self {
+            window: AtomicU32::new(0),
+            scale: AtomicU32::new(1.0f32.to_bits()),
+        }
+    }
+}
 
 impl EmbedTarget {
     pub fn window(&self) -> Option<u32> {
-        match self.0.load(Ordering::Relaxed) {
+        match self.window.load(Ordering::Relaxed) {
             0 => None,
             window => Some(window),
         }
+    }
+
+    /// Converts the window's size in pixels to the logical size the host asks the editor for.
+    pub fn logical_size(&self, pixels: (u32, u32)) -> (u32, u32) {
+        let scale = f32::from_bits(self.scale.load(Ordering::Relaxed));
+        let logical = |p: u32| ((p as f32 / scale).round() as u32).max(1);
+        (logical(pixels.0), logical(pixels.1))
     }
 }
 
@@ -57,10 +76,12 @@ impl Drop for OpenEditor {
     fn drop(&mut self) {
         log!(self.instance, "plugin window closed");
         // Only clear it if no newer window has replaced it.
-        let _ =
-            self.target
-                .0
-                .compare_exchange(self.window, 0, Ordering::Relaxed, Ordering::Relaxed);
+        let _ = self.target.window.compare_exchange(
+            self.window,
+            0,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -80,7 +101,7 @@ impl Editor for SkollEditor {
                 0
             }
         };
-        self.target.0.store(window, Ordering::Relaxed);
+        self.target.window.store(window, Ordering::Relaxed);
         Box::new(OpenEditor {
             instance: self.instance,
             target: self.target.clone(),
@@ -89,22 +110,20 @@ impl Editor for SkollEditor {
     }
 
     fn size(&self) -> (u32, u32) {
-        let size = *self
+        *self
             .params
             .editor_size
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        log!(self.instance, "host asked for the window size: {}x{}", size.0, size.1);
-        size
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn can_resize(&self) -> bool {
         true
     }
 
-    /// The host resized the window. mpv follows the window by itself.
+    /// The host resized the window. mpv follows the window by itself. Bitwig resizes the window
+    /// without calling this, so the background thread also records the size mpv reports.
     fn set_size(&self, width: u32, height: u32) -> bool {
-        log!(self.instance, "host set the window size: {width}x{height}");
         if width == 0 || height == 0 {
             return false;
         }
@@ -116,8 +135,12 @@ impl Editor for SkollEditor {
         true
     }
 
-    fn set_scale_factor(&self, _factor: f32) -> bool {
-        // mpv scales the video to whatever size the window has.
+    fn set_scale_factor(&self, factor: f32) -> bool {
+        // mpv scales the video to whatever size the window has. The factor only converts the
+        // window size mpv reports back to logical pixels.
+        if factor > 0.0 {
+            self.target.scale.store(factor.to_bits(), Ordering::Relaxed);
+        }
         true
     }
 
@@ -154,6 +177,15 @@ mod tests {
     }
 
     #[test]
+    fn converts_window_pixels_to_logical_size() {
+        let target = EmbedTarget::default();
+        assert_eq!(target.logical_size((1280, 720)), (1280, 720));
+        target.scale.store(2.0f32.to_bits(), Ordering::Relaxed);
+        assert_eq!(target.logical_size((1280, 720)), (640, 360));
+        assert_eq!(target.logical_size((1, 1)), (1, 1));
+    }
+
+    #[test]
     fn closing_clears_only_its_own_window() {
         let target = Arc::new(EmbedTarget::default());
         assert_eq!(target.window(), None);
@@ -163,9 +195,9 @@ mod tests {
             target: target.clone(),
             window: 11,
         };
-        target.0.store(11, Ordering::Relaxed);
+        target.window.store(11, Ordering::Relaxed);
         // The host opens a new window before dropping the old handle.
-        target.0.store(22, Ordering::Relaxed);
+        target.window.store(22, Ordering::Relaxed);
         drop(first);
         assert_eq!(target.window(), Some(22));
     }
