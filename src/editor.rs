@@ -89,11 +89,13 @@ impl Editor for SkollEditor {
     }
 
     fn size(&self) -> (u32, u32) {
-        *self
+        let size = *self
             .params
             .editor_size
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        log!(self.instance, "host asked for the window size: {}x{}", size.0, size.1);
+        size
     }
 
     fn can_resize(&self) -> bool {
@@ -102,6 +104,7 @@ impl Editor for SkollEditor {
 
     /// The host resized the window. mpv follows the window by itself.
     fn set_size(&self, width: u32, height: u32) -> bool {
+        log!(self.instance, "host set the window size: {width}x{height}");
         if width == 0 || height == 0 {
             return false;
         }
